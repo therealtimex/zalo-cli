@@ -14,7 +14,7 @@ export function registerPollCommands(program) {
         .option("--add-options", "Allow members to add new options")
         .option("--anonymous", "Hide voter identities")
         .option("--hide-preview", "Hide results until voted")
-        .option("--expire <minutes>", "Auto-close after N minutes", parseInt)
+        .option("--expire <minutes>", "Auto-close after N minutes", (v) => parseInt(v, 10))
         .action(async (groupId, question, options, opts) => {
             try {
                 if (options.length < 2) {

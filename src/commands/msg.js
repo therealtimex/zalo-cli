@@ -252,7 +252,7 @@ export function registerMsgCommands(program) {
     msg.command("send-qr-transfer <threadId> <accountNumber>")
         .description("Generate VietQR and send as image")
         .requiredOption("-b, --bank <name>", "Bank name or BIN code")
-        .option("-a, --amount <n>", "Transfer amount in VND", parseInt)
+        .option("-a, --amount <n>", "Transfer amount in VND", (v) => parseInt(v, 10))
         .option("-m, --content <text>", "Transfer content (max 50 chars)")
         .option("--template <tpl>", "QR style: compact, print, qronly", "compact")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
@@ -338,7 +338,7 @@ export function registerMsgCommands(program) {
     msg.command("send-voice <threadId> <voiceUrl>")
         .description("Send a voice message from URL")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
-        .option("--ttl <ms>", "Time to live in milliseconds", parseInt, 0)
+        .option("--ttl <ms>", "Time to live in milliseconds", (v) => parseInt(v, 10), 0)
         .action(async (threadId, voiceUrl, opts) => {
             try {
                 info(`Sending voice: ${voiceUrl}`);
@@ -368,9 +368,9 @@ export function registerMsgCommands(program) {
         .requiredOption("--thumb <url>", "Thumbnail image URL")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-m, --caption <text>", "Caption text", "")
-        .option("-d, --duration <ms>", "Video duration in milliseconds", parseInt)
-        .option("-W, --width <px>", "Video width", parseInt, 1280)
-        .option("-H, --height <px>", "Video height", parseInt, 720)
+        .option("-d, --duration <ms>", "Video duration in milliseconds", (v) => parseInt(v, 10))
+        .option("-W, --width <px>", "Video width", (v) => parseInt(v, 10), 1280)
+        .option("-H, --height <px>", "Video height", (v) => parseInt(v, 10), 720)
         .action(async (threadId, videoUrl, opts) => {
             try {
                 info(`Sending video: ${videoUrl}`);

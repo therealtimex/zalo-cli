@@ -23,9 +23,9 @@ export function registerAutoReplyCommands(program) {
         .description("Create an auto-reply rule")
         .option("--enable", "Enable the rule (default: true)", true)
         .option("--no-enable", "Create disabled")
-        .option("--start <ms>", "Start time (epoch ms)", parseInt, 0)
-        .option("--end <ms>", "End time (epoch ms)", parseInt, 0)
-        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseInt, 0)
+        .option("--start <ms>", "Start time (epoch ms)", (v) => parseInt(v, 10), 0)
+        .option("--end <ms>", "End time (epoch ms)", (v) => parseInt(v, 10), 0)
+        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", (v) => parseInt(v, 10), 0)
         .option("--uids <ids...>", "Specific user IDs to auto-reply to")
         .action(async (content, opts) => {
             try {
@@ -48,9 +48,9 @@ export function registerAutoReplyCommands(program) {
         .description("Update an auto-reply rule")
         .option("--enable", "Enable the rule")
         .option("--no-enable", "Disable the rule")
-        .option("--start <ms>", "Start time (epoch ms)", parseInt, 0)
-        .option("--end <ms>", "End time (epoch ms)", parseInt, 0)
-        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseInt, 0)
+        .option("--start <ms>", "Start time (epoch ms)", (v) => parseInt(v, 10), 0)
+        .option("--end <ms>", "End time (epoch ms)", (v) => parseInt(v, 10), 0)
+        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", (v) => parseInt(v, 10), 0)
         .option("--uids <ids...>", "Specific user IDs")
         .action(async (id, content, opts) => {
             try {

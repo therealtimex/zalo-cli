@@ -22,14 +22,24 @@ export function registerSyncCommand(program) {
         .description(
             "Sync all contacts, group chats, and message history into local SQLite cache (requires prior auth)",
         )
-        .option("-n, --per-thread <n>", "Number of recent messages to fetch per thread (group or DM)", parseInt, 50)
+        .option(
+            "-n, --per-thread <n>",
+            "Number of recent messages to fetch per thread (group or DM)",
+            (v) => parseInt(v, 10),
+            50,
+        )
         .option(
             "--delay <ms>",
             "Delay in milliseconds between group history requests to avoid rate limiting",
-            parseInt,
+            (v) => parseInt(v, 10),
             2000,
         )
-        .option("--timeout <ms>", "Timeout in milliseconds waiting for message history response", parseInt, 15000)
+        .option(
+            "--timeout <ms>",
+            "Timeout in milliseconds waiting for message history response",
+            (v) => parseInt(v, 10),
+            15000,
+        )
         .option("--download-media", "Download media attachments for synced messages in the background")
         .action(async (opts) => {
             const jsonMode = program.opts().json;

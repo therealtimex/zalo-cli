@@ -12,8 +12,8 @@ export function registerCatalogCommands(program) {
     catalog
         .command("list")
         .description("List all catalogs")
-        .option("-l, --limit <n>", "Items per page", parseInt, 20)
-        .option("-p, --page <n>", "Page number", parseInt, 0)
+        .option("-l, --limit <n>", "Items per page", (v) => parseInt(v, 10), 20)
+        .option("-p, --page <n>", "Page number", (v) => parseInt(v, 10), 0)
         .action(async (opts) => {
             try {
                 const result = await getApi().getCatalogList({ limit: opts.limit, page: opts.page });
@@ -62,8 +62,8 @@ export function registerCatalogCommands(program) {
     catalog
         .command("products <catalogId>")
         .description("List products in a catalog")
-        .option("-l, --limit <n>", "Items per page", parseInt, 100)
-        .option("-p, --page <n>", "Page number", parseInt, 0)
+        .option("-l, --limit <n>", "Items per page", (v) => parseInt(v, 10), 100)
+        .option("-p, --page <n>", "Page number", (v) => parseInt(v, 10), 0)
         .action(async (catalogId, opts) => {
             try {
                 const result = await getApi().getProductCatalogList({

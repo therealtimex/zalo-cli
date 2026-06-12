@@ -27,7 +27,7 @@ export function registerLoginCommands(program) {
         .option("-p, --proxy <url>", "Proxy URL (http/https/socks5://[user:pass@]host:port)")
         .option("-n, --name <label>", "Friendly name for this account", "")
         .option("--qr-url", "Start local HTTP server to view QR in browser (for VPS/headless)")
-        .option("-q, --qr-port <port>", "Port for QR HTTP server (default: 18927)", parseInt)
+        .option("-q, --qr-port <port>", "Port for QR HTTP server (default: 18927)", (v) => parseInt(v, 10))
         .option("--credentials <path>", "Login from exported credentials file (skip QR)")
         .action(async (opts) => {
             // Credential-based login (headless/CI)

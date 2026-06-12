@@ -480,8 +480,8 @@ export function registerGroupCommands(program) {
     group
         .command("blocked <groupId>")
         .description("List blocked members in a group")
-        .option("-c, --count <n>", "Items per page", parseInt, 50)
-        .option("-p, --page <n>", "Page number", parseInt, 1)
+        .option("-c, --count <n>", "Items per page", (v) => parseInt(v, 10), 50)
+        .option("-p, --page <n>", "Page number", (v) => parseInt(v, 10), 1)
         .action(async (groupId, opts) => {
             try {
                 const result = await getApi().getGroupBlockedMember({ page: opts.page, count: opts.count }, groupId);

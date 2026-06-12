@@ -185,8 +185,8 @@ export function registerProfileCommands(program) {
     profile
         .command("avatars")
         .description("List your avatar gallery")
-        .option("-c, --count <n>", "Page size", parseInt, 50)
-        .option("-p, --page <n>", "Page number", parseInt, 1)
+        .option("-c, --count <n>", "Page size", (v) => parseInt(v, 10), 50)
+        .option("-p, --page <n>", "Page number", (v) => parseInt(v, 10), 1)
         .action(async (opts) => {
             try {
                 const result = await getApi().getAvatarList(opts.count, opts.page);

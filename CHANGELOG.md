@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.5] - 2026-06-12
+
+### Fixed
+
+- **All numeric CLI options silently NaN with Commander 14** — Commander 14 changed the coercion function signature from `(value)` to `(value, previousValue)`. Using bare `parseInt` as the coercion caused it to be called as `parseInt(value, previousValue)` where `previousValue` (the default, e.g. `50`, `2000`) was treated as the numeric base. Since most defaults are outside the valid radix range (2–36), `parseInt` returned `NaN`. This broke `--per-thread`, `--delay`, `--timeout`, and every other numeric option across `sync`, `msg`, `friend`, `group`, `profile`, `catalog`, `auto-reply`, `login`, and `poll`. Fixed by replacing bare `parseInt` with `(v) => parseInt(v, 10)` in all option definitions.
+
 ## [1.8.4] - 2026-06-12
 
 ### Fixed

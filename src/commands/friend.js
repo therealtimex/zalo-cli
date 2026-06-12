@@ -296,8 +296,8 @@ export function registerFriendCommands(program) {
     friend
         .command("alias-list")
         .description("List all friend aliases")
-        .option("-c, --count <n>", "Page size", parseInt, 100)
-        .option("-p, --page <n>", "Page number", parseInt, 1)
+        .option("-c, --count <n>", "Page size", (v) => parseInt(v, 10), 100)
+        .option("-p, --page <n>", "Page number", (v) => parseInt(v, 10), 1)
         .action(async (opts) => {
             try {
                 const result = await getApi().getAliasList(opts.count, opts.page);
