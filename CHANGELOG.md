@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.8] - 2026-06-12
+
+### Fixed
+
+- **Update checker pointed at wrong package name** — was querying `zalo-agent-cli` (old name, latest 1.6.2) instead of `@realtimex/zalo-cli`, causing a spurious "downgrade available" warning. Both `checkForUpdates` and `selfUpdate` now use the correct scoped package name.
+
 ## [1.7.7] - 2026-06-12
 
 ### Fixed
