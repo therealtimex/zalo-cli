@@ -11,8 +11,6 @@ import { homedir } from "os";
 export const CONFIG_DIR = process.env.ZALO_CONFIG_DIR || join(homedir(), ".zalo-agent-cli");
 export const CREDENTIALS_DIR = join(CONFIG_DIR, "credentials");
 
-
-
 /**
  * Save credentials for a specific account.
  * @param {string} ownId
