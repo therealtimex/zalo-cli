@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.1] - 2026-06-12
+
+### Added
+
+- **`sync --delay <ms>` option** — configurable delay between group history requests (default 200ms). Use a higher value (e.g. `--delay 500`) if groups are still being skipped, or lower (e.g. `--delay 50`) for faster syncs on accounts that aren't being throttled.
+
 ## [1.8.0] - 2026-06-12
 
 ### Fixed

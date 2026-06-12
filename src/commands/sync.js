@@ -23,6 +23,12 @@ export function registerSyncCommand(program) {
             "Sync all contacts, group chats, and message history into local SQLite cache (requires prior auth)",
         )
         .option("-n, --per-thread <n>", "Number of recent messages to fetch per thread (group or DM)", parseInt, 50)
+        .option(
+            "--delay <ms>",
+            "Delay in milliseconds between group history requests to avoid rate limiting",
+            parseInt,
+            200,
+        )
         .option("--timeout <ms>", "Timeout in milliseconds waiting for message history response", parseInt, 15000)
         .option("--download-media", "Download media attachments for synced messages in the background")
         .action(async (opts) => {
@@ -105,6 +111,7 @@ export function registerSyncCommand(program) {
                 if (!jsonMode) success(`Synced ${groupsCount} group chats.`);
 
                 const perThread = opts.perThread;
+                const delay = opts.delay;
                 const timeout = opts.timeout;
                 const ownId = getOwnId();
 
@@ -277,8 +284,7 @@ export function registerSyncCommand(program) {
                             } catch {}
                         }
                     } catch {}
-                    // Avoid rate-limiting on rapid sequential history fetches
-                    await new Promise((r) => setTimeout(r, 200));
+                    await new Promise((r) => setTimeout(r, delay));
                 }
 
                 let mediaDownloaded = 0;
