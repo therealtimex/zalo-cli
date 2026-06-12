@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.7] - 2026-06-12
+
+### Fixed
+
+- **`sync` command only synced self-sent messages** — the Zalo WebSocket global feed (`requestOldMessages`) only returns messages authored by the current user; received messages were silently excluded. Group sync now uses `getGroupChatHistory` per group via HTTP, which returns all messages (sent + received). DM sync attempts a per-friend HTTP history fetch first and falls back to the WebSocket feed if the endpoint is unavailable.
+
 ## [1.6.1] - 2026-03-27
 
 ### Security

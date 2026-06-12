@@ -104,155 +104,203 @@ export function registerSyncCommand(program) {
                 }
                 if (!jsonMode) success(`Synced ${groupsCount} group chats.`);
 
-                if (!jsonMode) info("Connecting listener to fetch message history...");
-                await new Promise((resolve, reject) => {
-                    const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 15000);
-                    api.listener.on("connected", () => {
-                        clearTimeout(timer);
-                        resolve();
-                    });
-                    api.listener.on("error", (err) => {
-                        clearTimeout(timer);
-                        reject(err);
-                    });
-                    api.listener.start({ retryOnClose: false });
-                });
-
                 const msgLimit = opts.msgLimit;
                 const timeout = opts.timeout;
+                const ownId = getOwnId();
 
-                // 1. Sync User/DM history globally
-                if (!jsonMode) info("Fetching DM message history...");
-                let lastMsgId = null;
-                let done = false;
-                let dmCount = 0;
-                while (!done && dmCount < msgLimit) {
-                    const pageMessages = await new Promise((resolve) => {
-                        const handler = (messages) => {
-                            clearTimeout(timer);
-                            api.listener.removeListener("old_messages", handler);
-                            resolve(messages);
-                        };
-                        const timer = setTimeout(() => {
-                            api.listener.removeListener("old_messages", handler);
-                            resolve([]);
-                        }, timeout);
-
-                        api.listener.on("old_messages", handler);
-                        api.listener.requestOldMessages(0, lastMsgId);
-                    });
-
-                    if (!pageMessages || pageMessages.length === 0) {
-                        done = true;
-                        break;
-                    }
-
-                    for (const msg of pageMessages) {
-                        const msgId = msg.data?.msgId;
-                        if (!msgId) continue;
-
-                        const text =
-                            typeof msg.data?.content === "string"
-                                ? msg.data.content
-                                : extractMessageText(msg.data?.content, msg.data?.msgType);
-                        const msgType =
-                            typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment";
-
-                        try {
-                            upsertMessage({
-                                msgId: msgId,
-                                threadId: msg.threadId,
-                                senderId: msg.data?.uidFrom || null,
-                                senderName: msg.data?.dName || null,
-                                ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
-                                fromMe: msg.isSelf ? 1 : 0,
-                                text,
-                                msgType,
-                                contentJson: JSON.stringify(msg.data),
-                                recalled: msg.data?.recalled ?? 0,
-                            });
-                            dmCount++;
-                        } catch {}
-                    }
-
-                    const lastMsg = pageMessages[pageMessages.length - 1];
-                    const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
-                    if (!nextId || nextId === lastMsgId) {
-                        done = true;
-                    }
-                    lastMsgId = nextId;
-                }
-
-                // 2. Sync Group history globally
-                if (!jsonMode) info("Fetching Group message history...");
-                lastMsgId = null;
-                done = false;
-                let groupMsgsCount = 0;
-                while (!done && groupMsgsCount < msgLimit) {
-                    const pageMessages = await new Promise((resolve) => {
-                        const handler = (messages) => {
-                            clearTimeout(timer);
-                            api.listener.removeListener("old_messages", handler);
-                            resolve(messages);
-                        };
-                        const timer = setTimeout(() => {
-                            api.listener.removeListener("old_messages", handler);
-                            resolve([]);
-                        }, timeout);
-
-                        api.listener.on("old_messages", handler);
-                        api.listener.requestOldMessages(1, lastMsgId);
-                    });
-
-                    if (!pageMessages || pageMessages.length === 0) {
-                        done = true;
-                        break;
-                    }
-
-                    for (const msg of pageMessages) {
-                        const msgId = msg.data?.msgId;
-                        if (!msgId) continue;
-
-                        const text =
-                            typeof msg.data?.content === "string"
-                                ? msg.data.content
-                                : extractMessageText(msg.data?.content, msg.data?.msgType);
-                        const msgType =
-                            typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment";
-
-                        try {
-                            upsertMessage({
-                                msgId: msgId,
-                                threadId: msg.threadId,
-                                senderId: msg.data?.uidFrom || null,
-                                senderName: msg.data?.dName || null,
-                                ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
-                                fromMe: msg.isSelf ? 1 : 0,
-                                text,
-                                msgType,
-                                contentJson: JSON.stringify(msg.data),
-                                recalled: msg.data?.recalled ?? 0,
-                            });
-                            groupMsgsCount++;
-                        } catch {}
-                    }
-
-                    const lastMsg = pageMessages[pageMessages.length - 1];
-                    const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
-                    if (!nextId || nextId === lastMsgId) {
-                        done = true;
-                    }
-                    lastMsgId = nextId;
-                }
-
+                // Register per-friend DM chat history via HTTP (Zalo global WS feed only returns
+                // self-sent messages; HTTP endpoint returns all messages including received ones).
+                let getDMChatHistoryHttp = null;
                 try {
-                    api.listener.stop();
+                    api.custom("_getDMChatHistory", async ({ ctx, utils, props }) => {
+                        const { userId, count } = props;
+                        const serviceURL = utils.makeURL(`${api.zpwServiceMap.chat[0]}/api/message/history`);
+                        const encryptedParams = utils.encodeAES(JSON.stringify({ toid: userId, count }));
+                        if (!encryptedParams) throw new Error("Encrypt failed");
+                        const url = utils.makeURL(serviceURL, { params: encryptedParams });
+                        const response = await utils.request(url, { method: "GET" });
+                        return utils.resolve(response, (result) => {
+                            const data =
+                                typeof result.data === "string" ? JSON.parse(result.data) : result.data;
+                            return data?.msgs || [];
+                        });
+                    });
+                    getDMChatHistoryHttp = (userId, count) =>
+                        api._getDMChatHistory({ userId, count });
                 } catch {}
+
+                // 1. Sync DM history — try HTTP per friend, fall back to WS global feed
+                if (!jsonMode) info("Fetching DM message history...");
+                let dmCount = 0;
+                let httpDmWorked = false;
+
+                if (getDMChatHistoryHttp) {
+                    for (const friend of friends) {
+                        if (dmCount >= msgLimit) break;
+                        try {
+                            const msgs = await getDMChatHistoryHttp(
+                                friend.userId,
+                                Math.min(50, msgLimit - dmCount),
+                            );
+                            if (msgs.length > 0) httpDmWorked = true;
+                            for (const rawMsg of msgs) {
+                                if (dmCount >= msgLimit) break;
+                                const msgId = rawMsg.msgId;
+                                if (!msgId) continue;
+                                const isSelf = rawMsg.uidFrom == "0";
+                                const senderId = isSelf ? ownId : rawMsg.uidFrom || null;
+                                const text =
+                                    typeof rawMsg.content === "string"
+                                        ? rawMsg.content
+                                        : extractMessageText(rawMsg.content, rawMsg.msgType);
+                                const msgType =
+                                    typeof rawMsg.content === "string"
+                                        ? "text"
+                                        : rawMsg.msgType || "attachment";
+                                try {
+                                    upsertMessage({
+                                        msgId,
+                                        threadId: friend.userId,
+                                        senderId,
+                                        senderName: rawMsg.dName || null,
+                                        ts: rawMsg.ts ? Number(rawMsg.ts) : Date.now(),
+                                        fromMe: isSelf ? 1 : 0,
+                                        text,
+                                        msgType,
+                                        contentJson: JSON.stringify(rawMsg),
+                                        recalled: rawMsg.recalled ?? 0,
+                                    });
+                                    dmCount++;
+                                } catch {}
+                            }
+                        } catch {}
+                    }
+                }
+
+                // Fall back to WS global feed if HTTP didn't return any messages
+                if (!httpDmWorked) {
+                    if (!jsonMode) info("Connecting listener for DM history fallback...");
+                    await new Promise((resolve, reject) => {
+                        const timer = setTimeout(
+                            () => reject(new Error("Listener connection timeout")),
+                            15000,
+                        );
+                        api.listener.on("connected", () => {
+                            clearTimeout(timer);
+                            resolve();
+                        });
+                        api.listener.on("error", (err) => {
+                            clearTimeout(timer);
+                            reject(err);
+                        });
+                        api.listener.start({ retryOnClose: false });
+                    });
+
+                    let lastMsgId = null;
+                    let done = false;
+                    while (!done && dmCount < msgLimit) {
+                        const pageMessages = await new Promise((resolve) => {
+                            const handler = (messages) => {
+                                clearTimeout(timer);
+                                api.listener.removeListener("old_messages", handler);
+                                resolve(messages);
+                            };
+                            const timer = setTimeout(() => {
+                                api.listener.removeListener("old_messages", handler);
+                                resolve([]);
+                            }, timeout);
+                            api.listener.on("old_messages", handler);
+                            api.listener.requestOldMessages(0, lastMsgId);
+                        });
+
+                        if (!pageMessages || pageMessages.length === 0) {
+                            done = true;
+                            break;
+                        }
+
+                        for (const msg of pageMessages) {
+                            const msgId = msg.data?.msgId;
+                            if (!msgId) continue;
+                            const text =
+                                typeof msg.data?.content === "string"
+                                    ? msg.data.content
+                                    : extractMessageText(msg.data?.content, msg.data?.msgType);
+                            const msgType =
+                                typeof msg.data?.content === "string"
+                                    ? "text"
+                                    : msg.data?.msgType || "attachment";
+                            try {
+                                upsertMessage({
+                                    msgId,
+                                    threadId: msg.threadId,
+                                    senderId: msg.data?.uidFrom || null,
+                                    senderName: msg.data?.dName || null,
+                                    ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
+                                    fromMe: msg.isSelf ? 1 : 0,
+                                    text,
+                                    msgType,
+                                    contentJson: JSON.stringify(msg.data),
+                                    recalled: msg.data?.recalled ?? 0,
+                                });
+                                dmCount++;
+                            } catch {}
+                        }
+
+                        const lastMsg = pageMessages[pageMessages.length - 1];
+                        const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
+                        if (!nextId || nextId === lastMsgId) done = true;
+                        lastMsgId = nextId;
+                    }
+
+                    try {
+                        api.listener.stop();
+                    } catch {}
+                }
+
+                // 2. Sync Group history via HTTP per group (includes both sent and received messages)
+                if (!jsonMode) info("Fetching Group message history...");
+                let groupMsgsCount = 0;
+
+                for (const gid of groupIds) {
+                    if (groupMsgsCount >= msgLimit) break;
+                    try {
+                        const perGroupCount = Math.min(50, msgLimit - groupMsgsCount);
+                        const history = await api.getGroupChatHistory(gid, perGroupCount);
+                        const msgs = history?.groupMsgs || [];
+                        for (const msg of msgs) {
+                            if (groupMsgsCount >= msgLimit) break;
+                            const msgId = msg.data?.msgId;
+                            if (!msgId) continue;
+                            const text =
+                                typeof msg.data?.content === "string"
+                                    ? msg.data.content
+                                    : extractMessageText(msg.data?.content, msg.data?.msgType);
+                            const msgType =
+                                typeof msg.data?.content === "string"
+                                    ? "text"
+                                    : msg.data?.msgType || "attachment";
+                            try {
+                                upsertMessage({
+                                    msgId,
+                                    threadId: msg.threadId,
+                                    senderId: msg.data?.uidFrom || null,
+                                    senderName: msg.data?.dName || null,
+                                    ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
+                                    fromMe: msg.isSelf ? 1 : 0,
+                                    text,
+                                    msgType,
+                                    contentJson: JSON.stringify(msg.data),
+                                    recalled: msg.data?.recalled ?? 0,
+                                });
+                                groupMsgsCount++;
+                            } catch {}
+                        }
+                    } catch {}
+                }
 
                 let mediaDownloaded = 0;
                 if (opts.downloadMedia) {
                     if (!jsonMode) info("Downloading media attachments in background...");
-                    const ownId = getOwnId();
                     if (ownId) {
                         const rows = db
                             .prepare(
