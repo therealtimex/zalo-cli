@@ -1,6 +1,6 @@
 {
   "name": "@realtimex/zalo-cli",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
   "type": "module",
   "bin": {
