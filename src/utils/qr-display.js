@@ -80,8 +80,6 @@ export function displayQR(event) {
         const openCmd = getOpenCommand();
         info(`QR image saved: ${QR_PATH}`);
         info(`To open: ${openCmd} "${QR_PATH}"`);
-        info("Copy this URL and paste in any browser to view QR:");
-        console.log(`data:image/png;base64,${imageB64}`);
     }
 }
 

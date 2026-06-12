@@ -78,7 +78,7 @@ describe("displayQR", () => {
         assert.equal(captured.length, 0, "should not output anything for empty image");
     });
 
-    it("human mode outputs data URL with full base64 (not truncated)", () => {
+    it("human mode outputs QR image path and open hint", () => {
         // No ZALO_JSON_MODE set = human mode
         // Suppress stdout.write (terminal escapes)
         const originalWrite = process.stdout.write;
@@ -88,10 +88,10 @@ describe("displayQR", () => {
 
         process.stdout.write = originalWrite;
 
-        // Find the data URL line in captured output
-        const dataUrlLine = captured.find((line) => line.startsWith("data:image/png;base64,"));
-        assert.ok(dataUrlLine, "should output a data URL line");
-        assert.ok(dataUrlLine.includes(TINY_PNG_B64), "data URL should contain full base64, not truncated");
-        assert.ok(!dataUrlLine.includes("..."), "data URL should not be truncated with ...");
+        // Find the QR image path in captured output
+        const hasSavedMsg = captured.some((line) => line.includes("QR image saved:"));
+        const hasOpenMsg = captured.some((line) => line.includes("To open:"));
+        assert.ok(hasSavedMsg, "should output a saved message");
+        assert.ok(hasOpenMsg, "should output an open command message");
     });
 });

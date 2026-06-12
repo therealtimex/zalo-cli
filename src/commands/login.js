@@ -17,7 +17,8 @@ import { addAccount, getActive, removeAccount } from "../core/accounts.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { startQrServer } from "../utils/qr-http-server.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { LoginQRCallbackEventType } from "zca-js";
 
 export function registerLoginCommands(program) {
     program
@@ -68,11 +69,34 @@ export function registerLoginCommands(program) {
                 const { ownId } = await loginWithQR(
                     opts.proxy,
                     (event) => {
-                        displayQR(event);
+                        if (event.type === LoginQRCallbackEventType.QRCodeGenerated) {
+                            displayQR(event);
 
-                        // Always start HTTP server for QR scanning (no flag needed)
-                        if (!qrServer) {
-                            qrServer = startQrServer(getQRPath(), opts.qrPort || 18927);
+                            // Always start HTTP server for QR scanning (no flag needed)
+                            if (!qrServer) {
+                                qrServer = startQrServer(getQRPath(), opts.qrPort || 18927);
+                            }
+                        } else if (event.type === LoginQRCallbackEventType.QRCodeScanned) {
+                            if (jsonMode) {
+                                console.log(
+                                    JSON.stringify({ event: "qr_scanned", name: event.data?.display_name || "" }),
+                                );
+                            } else {
+                                success(`QR Code scanned by ${event.data?.display_name || "user"}!`);
+                                info("Please confirm the login request on Zalo mobile app...");
+                            }
+                        } else if (event.type === LoginQRCallbackEventType.QRCodeDeclined) {
+                            if (jsonMode) {
+                                console.log(JSON.stringify({ event: "qr_declined" }));
+                            } else {
+                                error("Login request declined on your phone. Retrying...");
+                            }
+                        } else if (event.type === LoginQRCallbackEventType.QRCodeExpired) {
+                            if (jsonMode) {
+                                console.log(JSON.stringify({ event: "qr_expired" }));
+                            } else {
+                                warning("QR Code expired. Generating a new one...");
+                            }
                         }
                     },
                     { readonly: program.opts().readOnly, lockWait: program.opts().lockWait },
