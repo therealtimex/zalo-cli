@@ -105,7 +105,7 @@ describe("CLI interface", () => {
 
     it("sync --help lists all sync flags", () => {
         const out = run("sync", "--help");
-        assert.match(out, /--msg-limit/);
+        assert.match(out, /--per-thread/);
         assert.match(out, /--timeout/);
         assert.match(out, /--download-media/);
     });

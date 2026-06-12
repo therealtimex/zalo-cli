@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.9] - 2026-06-12
+
+### Changed
+
+- **`sync` `--msg-limit` replaced with `--per-thread <n>` (default 50)** — old global cap caused only ~49 messages to sync across 360 groups. New option fetches up to N recent messages per group and per DM thread independently, with no global ceiling.
+
 ## [1.7.8] - 2026-06-12
 
 ### Fixed

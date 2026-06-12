@@ -22,7 +22,7 @@ export function registerSyncCommand(program) {
         .description(
             "Sync all contacts, group chats, and message history into local SQLite cache (requires prior auth)",
         )
-        .option("-n, --msg-limit <n>", "Max message count to fetch globally per type (User/Group)", parseInt, 50)
+        .option("-n, --per-thread <n>", "Number of recent messages to fetch per thread (group or DM)", parseInt, 50)
         .option("--timeout <ms>", "Timeout in milliseconds waiting for message history response", parseInt, 15000)
         .option("--download-media", "Download media attachments for synced messages in the background")
         .action(async (opts) => {
@@ -104,7 +104,7 @@ export function registerSyncCommand(program) {
                 }
                 if (!jsonMode) success(`Synced ${groupsCount} group chats.`);
 
-                const msgLimit = opts.msgLimit;
+                const perThread = opts.perThread;
                 const timeout = opts.timeout;
                 const ownId = getOwnId();
 
@@ -134,12 +134,10 @@ export function registerSyncCommand(program) {
 
                 if (getDMChatHistoryHttp) {
                     for (const friend of friends) {
-                        if (dmCount >= msgLimit) break;
                         try {
-                            const msgs = await getDMChatHistoryHttp(friend.userId, Math.min(50, msgLimit - dmCount));
+                            const msgs = await getDMChatHistoryHttp(friend.userId, perThread);
                             if (msgs.length > 0) httpDmWorked = true;
                             for (const rawMsg of msgs) {
-                                if (dmCount >= msgLimit) break;
                                 const msgId = rawMsg.msgId;
                                 if (!msgId) continue;
                                 const isSelf = rawMsg.uidFrom === "0";
@@ -188,7 +186,7 @@ export function registerSyncCommand(program) {
 
                     let lastMsgId = null;
                     let done = false;
-                    while (!done && dmCount < msgLimit) {
+                    while (!done) {
                         const pageMessages = await new Promise((resolve) => {
                             const handler = (messages) => {
                                 clearTimeout(timer);
@@ -250,13 +248,10 @@ export function registerSyncCommand(program) {
                 let groupMsgsCount = 0;
 
                 for (const gid of groupIds) {
-                    if (groupMsgsCount >= msgLimit) break;
                     try {
-                        const perGroupCount = Math.min(50, msgLimit - groupMsgsCount);
-                        const history = await api.getGroupChatHistory(gid, perGroupCount);
+                        const history = await api.getGroupChatHistory(gid, perThread);
                         const msgs = history?.groupMsgs || [];
                         for (const msg of msgs) {
-                            if (groupMsgsCount >= msgLimit) break;
                             const msgId = msg.data?.msgId;
                             if (!msgId) continue;
                             const text =
