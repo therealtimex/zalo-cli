@@ -47,7 +47,7 @@ export function getMediaInfo(content, msgType) {
 export async function downloadAttachment(ownId, msgId, subfolder, downloadUrl, filename) {
     const accountDir = join(CONFIG_DIR, "accounts", ownId);
     const mediaDir = join(accountDir, "media", subfolder);
-    
+
     // Ensure media directories exist with owner-only permissions
     fs.mkdirSync(mediaDir, { recursive: true, mode: 0o700 });
     try {
@@ -55,7 +55,7 @@ export async function downloadAttachment(ownId, msgId, subfolder, downloadUrl, f
     } catch {}
 
     const localPath = join(mediaDir, `${msgId}_${filename}`);
-    
+
     const response = await fetch(downloadUrl);
     if (!response.ok) {
         throw new Error(`HTTP error ${response.status} fetching ${downloadUrl}`);

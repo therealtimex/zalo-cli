@@ -7,7 +7,14 @@ import { resolve } from "path";
 import { getApi, getOwnId } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
-import { getDb, getLocalMessages, getLocalMessagesCount, getOldestMessageId, upsertMessage, updateMessageLocalPath } from "../core/db.js";
+import {
+    getDb,
+    getLocalMessages,
+    getLocalMessagesCount,
+    getOldestMessageId,
+    upsertMessage,
+    updateMessageLocalPath,
+} from "../core/db.js";
 import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
 
 /**
@@ -499,7 +506,9 @@ export function registerMsgCommands(program) {
 
             try {
                 if (!jsonMode && limit > 100) {
-                    info(`Warning: fetching up to ${limit} messages. Large history may use significant memory and bandwidth.`);
+                    info(
+                        `Warning: fetching up to ${limit} messages. Large history may use significant memory and bandwidth.`,
+                    );
                 }
 
                 const db = getDb();
@@ -512,7 +521,12 @@ export function registerMsgCommands(program) {
                         allMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
                         output(
-                            { threadId, threadType: threadType === 0 ? "dm" : "group", count: allMessages.length, messages: allMessages },
+                            {
+                                threadId,
+                                threadType: threadType === 0 ? "dm" : "group",
+                                count: allMessages.length,
+                                messages: allMessages,
+                            },
                             jsonMode,
                             () => {
                                 success(`${allMessages.length} message(s) from ${threadId} (loaded from local cache)`);
@@ -588,9 +602,10 @@ export function registerMsgCommands(program) {
                             threadId: msg.threadId,
                             senderId: msg.data?.uidFrom || null,
                             senderName: msg.data?.dName || null,
-                            text: typeof msg.data?.content === "string"
-                                ? msg.data.content
-                                : extractMessageText(msg.data?.content, msg.data?.msgType),
+                            text:
+                                typeof msg.data?.content === "string"
+                                    ? msg.data.content
+                                    : extractMessageText(msg.data?.content, msg.data?.msgType),
                             timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
                             type: typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment",
                         };
@@ -608,7 +623,7 @@ export function registerMsgCommands(program) {
                                 text: parsedMsg.text,
                                 msgType: parsedMsg.type,
                                 contentJson: JSON.stringify(msg.data),
-                                recalled: msg.data?.recalled ?? 0
+                                recalled: msg.data?.recalled ?? 0,
                             });
                         }
                     }
@@ -632,7 +647,12 @@ export function registerMsgCommands(program) {
                 allMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
                 output(
-                    { threadId, threadType: threadType === 0 ? "dm" : "group", count: allMessages.length, messages: allMessages },
+                    {
+                        threadId,
+                        threadType: threadType === 0 ? "dm" : "group",
+                        count: allMessages.length,
+                        messages: allMessages,
+                    },
                     jsonMode,
                     () => {
                         success(`${allMessages.length} message(s) from ${threadId}`);
@@ -648,7 +668,9 @@ export function registerMsgCommands(program) {
                 api.listener.stop();
                 process.exit(0);
             } catch (e) {
-                try { api.listener.stop(); } catch {}
+                try {
+                    api.listener.stop();
+                } catch {}
                 error(`History fetch failed: ${e.message}`);
                 process.exit(1);
             }
@@ -699,7 +721,7 @@ export function registerMsgCommands(program) {
                     msgId,
                     mediaInfo.subfolder,
                     mediaInfo.url,
-                    mediaInfo.filename
+                    mediaInfo.filename,
                 );
                 updateMessageLocalPath(msgId, localPath);
                 success(`Downloaded attachment to ${localPath}`);
@@ -726,11 +748,15 @@ export function registerMsgCommands(program) {
                     error("Could not determine current logged-in user ID.");
                     process.exit(1);
                 }
-                const rows = db.prepare(`
+                const rows = db
+                    .prepare(
+                        `
                     SELECT msg_id, msg_type, content_json 
                     FROM messages 
                     WHERE thread_id = ? AND local_path IS NULL AND recalled = 0 AND msg_type != 'text'
-                `).all(threadId);
+                `,
+                    )
+                    .all(threadId);
 
                 if (!rows || rows.length === 0) {
                     info(`No undownloaded media attachments found in local cache for thread '${threadId}'.`);
@@ -759,7 +785,7 @@ export function registerMsgCommands(program) {
                             row.msg_id,
                             mediaInfo.subfolder,
                             mediaInfo.url,
-                            mediaInfo.filename
+                            mediaInfo.filename,
                         );
                         updateMessageLocalPath(row.msg_id, localPath);
                         downloadedPaths.push(localPath);

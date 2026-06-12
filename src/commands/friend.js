@@ -37,7 +37,7 @@ export function registerFriendCommands(program) {
                                     zaloName: f.zaloName || null,
                                     avatarUrl: f.avatar || null,
                                     isFriend: 1,
-                                    lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null
+                                    lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null,
                                 });
                             } catch {}
                         }
@@ -98,7 +98,7 @@ export function registerFriendCommands(program) {
                                     zaloName: f.zaloName || null,
                                     avatarUrl: f.avatar || null,
                                     isFriend: 1,
-                                    lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null
+                                    lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null,
                                 });
                             } catch {}
                         }

@@ -12,7 +12,6 @@ const {
     initDatabase,
     closeDatabase,
     getDb,
-    upsertChat,
     upsertContact,
     upsertGroup,
     upsertMessage,
@@ -37,12 +36,15 @@ describe("Local SQLite Storage & Caching Layer", () => {
     it("initializes database tables and triggers correctly", async () => {
         const ownId = "test_user_123";
         await initDatabase(ownId);
-        
+
         const db = getDb();
         assert.ok(db, "Database should be initialized");
 
         // Verify tables exist
-        const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
+        const tables = db
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .all()
+            .map((r) => r.name);
         assert.ok(tables.includes("chats"), "chats table should exist");
         assert.ok(tables.includes("contacts"), "contacts table should exist");
         assert.ok(tables.includes("groups"), "groups table should exist");
@@ -50,7 +52,10 @@ describe("Local SQLite Storage & Caching Layer", () => {
         assert.ok(tables.includes("messages"), "messages table should exist");
 
         // Verify triggers exist
-        const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type='trigger'").all().map(r => r.name);
+        const triggers = db
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
+            .all()
+            .map((r) => r.name);
         assert.ok(triggers.includes("trg_messages_ai"), "insert trigger should exist");
         assert.ok(triggers.includes("trg_messages_au"), "update trigger should exist");
         assert.ok(triggers.includes("trg_messages_ad"), "delete trigger should exist");
@@ -58,7 +63,7 @@ describe("Local SQLite Storage & Caching Layer", () => {
 
     it("respects read-only mode and does not acquire write lock", async () => {
         const ownId = "test_user_readonly";
-        
+
         // 1. Create directory and db file first so readonly open doesn't fail
         const accountDir = join(tempHome, "accounts", ownId);
         fs.mkdirSync(accountDir, { recursive: true, mode: 0o700 });
@@ -67,7 +72,7 @@ describe("Local SQLite Storage & Caching Layer", () => {
 
         // 2. Init in readonly mode
         await initDatabase(ownId, { readonly: true });
-        
+
         // 3. Verify LOCK file was not created
         const lockPath = join(accountDir, "LOCK");
         assert.equal(fs.existsSync(lockPath), false, "LOCK file should not exist in readonly mode");

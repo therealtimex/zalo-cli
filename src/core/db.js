@@ -46,7 +46,7 @@ export async function initDatabase(ownId, options = {}) {
     }
 
     _db = new Database(dbPath, { readonly });
-    
+
     // Optimizations
     if (!readonly) {
         _db.pragma("journal_mode = WAL");
@@ -205,7 +205,7 @@ export function upsertChat(chat) {
         chat.pinned ?? 0,
         chat.archived ?? 0,
         chat.mutedUntil ?? 0,
-        Date.now()
+        Date.now(),
     );
 }
 
@@ -232,7 +232,7 @@ export function upsertContact(contact) {
         contact.avatarUrl ?? null,
         contact.isFriend ?? 0,
         contact.lastActive ?? null,
-        Date.now()
+        Date.now(),
     );
 }
 
@@ -244,7 +244,7 @@ export function upsertGroup(group) {
         threadId: group.groupId,
         type: 1, // Group
         name: group.name,
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
     });
     const stmt = db.prepare(`
         INSERT INTO groups (group_id, name, owner_id, creator_id, created_ts, member_count, updated_at)
@@ -264,7 +264,7 @@ export function upsertGroup(group) {
         group.creatorId ?? null,
         group.createdTs ?? null,
         group.memberCount ?? 0,
-        Date.now()
+        Date.now(),
     );
 }
 
@@ -276,7 +276,7 @@ export function upsertGroupParticipant(groupId, userId, participant = {}) {
     if (!contactExists) {
         upsertContact({
             userId: userId,
-            displayName: participant.displayName || participant.name || null
+            displayName: participant.displayName || participant.name || null,
         });
     }
     const stmt = db.prepare(`
@@ -286,12 +286,7 @@ export function upsertGroupParticipant(groupId, userId, participant = {}) {
             role = COALESCE(excluded.role, group_participants.role),
             joined_at = COALESCE(excluded.joined_at, group_participants.joined_at)
     `);
-    stmt.run(
-        groupId,
-        userId,
-        participant.role ?? 'member',
-        participant.joinedAt ?? null
-    );
+    stmt.run(groupId, userId, participant.role ?? "member", participant.joinedAt ?? null);
 }
 
 export function upsertMessage(msg) {
@@ -307,12 +302,15 @@ export function upsertMessage(msg) {
             type: msg.type ?? 0, // default User/DM
             name: msg.senderName ?? null,
             lastMessageTs: msg.ts,
-            updatedAt: Date.now()
+            updatedAt: Date.now(),
         });
     } else {
         // Update last message timestamp
-        db.prepare("UPDATE chats SET last_message_ts = ?, updated_at = ? WHERE thread_id = ?")
-            .run(msg.ts, Date.now(), threadId);
+        db.prepare("UPDATE chats SET last_message_ts = ?, updated_at = ? WHERE thread_id = ?").run(
+            msg.ts,
+            Date.now(),
+            threadId,
+        );
     }
 
     // Ensure sender contact exists
@@ -321,7 +319,7 @@ export function upsertMessage(msg) {
         if (!contactExists) {
             upsertContact({
                 userId: msg.senderId,
-                displayName: msg.senderName
+                displayName: msg.senderName,
             });
         }
     }
@@ -349,10 +347,10 @@ export function upsertMessage(msg) {
         msg.ts,
         msg.fromMe ?? 0,
         msg.text ?? null,
-        msg.msgType ?? 'text',
+        msg.msgType ?? "text",
         msg.contentJson ?? null,
         msg.localPath ?? null,
-        msg.recalled ?? 0
+        msg.recalled ?? 0,
     );
 }
 
@@ -365,41 +363,46 @@ export function updateMessageLocalPath(msgId, localPath) {
 export function getLocalChats(options = {}) {
     const db = getDb();
     if (!db) return [];
-    
-    let query = "SELECT c.thread_id, c.type, c.name, c.last_message_ts, g.member_count FROM chats c LEFT JOIN groups g ON c.thread_id = g.group_id";
+
+    let query =
+        "SELECT c.thread_id, c.type, c.name, c.last_message_ts, g.member_count FROM chats c LEFT JOIN groups g ON c.thread_id = g.group_id";
     const params = [];
-    
+
     if (options.friendsOnly) {
         query += " WHERE c.type = 0";
     } else if (options.groupsOnly) {
         query += " WHERE c.type = 1";
     }
-    
+
     query += " ORDER BY c.last_message_ts DESC, c.updated_at DESC LIMIT ?";
     params.push(options.limit || 20);
-    
+
     const rows = db.prepare(query).all(...params);
-    return rows.map(row => ({
+    return rows.map((row) => ({
         threadId: row.thread_id,
         name: row.name || "?",
         type: row.type === 1 ? "Group" : "User",
         typeFlag: row.type,
         lastActive: row.last_message_ts ? new Date(row.last_message_ts).toLocaleString() : "?",
-        memberCount: row.member_count || 0
+        memberCount: row.member_count || 0,
     }));
 }
 
 export function getLocalFriends() {
     const db = getDb();
     if (!db) return [];
-    const rows = db.prepare("SELECT user_id, phone_number, display_name, zalo_name, avatar_url, last_active FROM contacts WHERE is_friend = 1").all();
-    return rows.map(row => ({
+    const rows = db
+        .prepare(
+            "SELECT user_id, phone_number, display_name, zalo_name, avatar_url, last_active FROM contacts WHERE is_friend = 1",
+        )
+        .all();
+    return rows.map((row) => ({
         userId: row.user_id,
         phoneNumber: row.phone_number,
         displayName: row.display_name,
         zaloName: row.zalo_name,
         avatar: row.avatar_url,
-        lastActionTime: row.last_active ? Math.floor(row.last_active / 1000) : 0
+        lastActionTime: row.last_active ? Math.floor(row.last_active / 1000) : 0,
     }));
 }
 
@@ -413,22 +416,28 @@ export function getLocalMessagesCount(threadId) {
 export function getLocalMessages(threadId, limit) {
     const db = getDb();
     if (!db) return [];
-    const rows = db.prepare("SELECT msg_id, thread_id, sender_id, sender_name, ts, text, msg_type FROM messages WHERE thread_id = ? ORDER BY ts DESC LIMIT ?").all(threadId, limit);
-    return rows.map(row => ({
+    const rows = db
+        .prepare(
+            "SELECT msg_id, thread_id, sender_id, sender_name, ts, text, msg_type FROM messages WHERE thread_id = ? ORDER BY ts DESC LIMIT ?",
+        )
+        .all(threadId, limit);
+    return rows.map((row) => ({
         msgId: row.msg_id,
         threadId: row.thread_id,
         senderId: row.sender_id,
         senderName: row.sender_name,
         text: row.text,
         timestamp: Number(row.ts),
-        type: row.msg_type
+        type: row.msg_type,
     }));
 }
 
 export function getOldestMessageId(threadId) {
     const db = getDb();
     if (!db) return null;
-    const row = db.prepare("SELECT msg_id, content_json FROM messages WHERE thread_id = ? ORDER BY ts ASC LIMIT 1").get(threadId);
+    const row = db
+        .prepare("SELECT msg_id, content_json FROM messages WHERE thread_id = ? ORDER BY ts ASC LIMIT 1")
+        .get(threadId);
     if (!row) return null;
     if (row.content_json) {
         try {
@@ -438,4 +447,3 @@ export function getOldestMessageId(threadId) {
     }
     return row.msg_id;
 }
-

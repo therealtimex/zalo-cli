@@ -58,7 +58,10 @@ program
         // Auto-login before any command that needs it (skip for login/account/oa commands)
         const skipAutoLogin = ["login", "account", "help", "version", "update", "oa", "mcp"].includes(cmdName);
         if (!skipAutoLogin) {
-            await autoLogin(program.opts().json, { readonly: program.opts().readOnly, lockWait: program.opts().lockWait });
+            await autoLogin(program.opts().json, {
+                readonly: program.opts().readOnly,
+                lockWait: program.opts().lockWait,
+            });
         }
         // Non-blocking update check (skip for update command itself)
         if (cmdName !== "update") {

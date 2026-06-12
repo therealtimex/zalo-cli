@@ -7,7 +7,14 @@ import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, autoLogin, clearSession, getOwnId } from "../core/zalo-client.js";
 import { success, error, info, warning } from "../utils/output.js";
-import { getDb, upsertMessage, upsertContact, upsertChat, upsertGroup, upsertGroupParticipant, updateMessageLocalPath } from "../core/db.js";
+import {
+    getDb,
+    upsertMessage,
+    upsertContact,
+    upsertChat,
+    upsertGroupParticipant,
+    updateMessageLocalPath,
+} from "../core/db.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
 
@@ -47,7 +54,10 @@ export function registerListenCommand(program) {
         .option("--no-self", "Exclude self-sent messages")
         .option("--auto-accept", "Auto-accept incoming friend requests")
         .option("--save <dir>", "Save messages locally as JSONL files (one file per thread, e.g. --save ./zalo-logs)")
-        .option("--download-media", "Auto-download media attachments (images, files, voice notes, stickers) to local account storage")
+        .option(
+            "--download-media",
+            "Auto-download media attachments (images, files, voice notes, stickers) to local account storage",
+        )
         .action(async (opts) => {
             const jsonMode = program.opts().json;
             const startTime = Date.now();
@@ -123,12 +133,16 @@ export function registerListenCommand(program) {
                                     senderName: msg.data.dName || null,
                                     ts: msg.data.ts ? Number(msg.data.ts) : Date.now(),
                                     fromMe: msg.isSelf ? 1 : 0,
-                                    text: typeof msg.data.content === "string"
-                                        ? msg.data.content
-                                        : extractMessageText(msg.data.content, msg.data.msgType),
-                                    msgType: typeof msg.data.content === "string" ? "text" : msg.data.msgType || "attachment",
+                                    text:
+                                        typeof msg.data.content === "string"
+                                            ? msg.data.content
+                                            : extractMessageText(msg.data.content, msg.data.msgType),
+                                    msgType:
+                                        typeof msg.data.content === "string"
+                                            ? "text"
+                                            : msg.data.msgType || "attachment",
                                     contentJson: JSON.stringify(msg.data),
-                                    recalled: msg.data.recalled ?? 0
+                                    recalled: msg.data.recalled ?? 0,
                                 });
                             } catch (e) {
                                 console.error(`[listen] DB save failed: ${e.message}`);
@@ -145,15 +159,21 @@ export function registerListenCommand(program) {
                                                 msg.data.msgId,
                                                 mediaInfo.subfolder,
                                                 mediaInfo.url,
-                                                mediaInfo.filename
-                                            ).then((localPath) => {
-                                                updateMessageLocalPath(msg.data.msgId, localPath);
-                                                if (!jsonMode) {
-                                                    success(`[listen] Downloaded media for msg ${msg.data.msgId} to ${localPath}`);
-                                                }
-                                            }).catch((err) => {
-                                                console.error(`[listen] Media download failed for msg ${msg.data.msgId}: ${err.message}`);
-                                            });
+                                                mediaInfo.filename,
+                                            )
+                                                .then((localPath) => {
+                                                    updateMessageLocalPath(msg.data.msgId, localPath);
+                                                    if (!jsonMode) {
+                                                        success(
+                                                            `[listen] Downloaded media for msg ${msg.data.msgId} to ${localPath}`,
+                                                        );
+                                                    }
+                                                })
+                                                .catch((err) => {
+                                                    console.error(
+                                                        `[listen] Media download failed for msg ${msg.data.msgId}: ${err.message}`,
+                                                    );
+                                                });
                                         }
                                     }
                                 } catch (e) {
@@ -212,14 +232,14 @@ export function registerListenCommand(program) {
                                     upsertContact({
                                         userId: event.data.fromUid,
                                         displayName: event.data.displayName || event.data.name || null,
-                                        isFriend: event.type === 0 ? 1 : (event.type === 1 ? 0 : null),
-                                        lastActive: Date.now()
+                                        isFriend: event.type === 0 ? 1 : event.type === 1 ? 0 : null,
+                                        lastActive: Date.now(),
                                     });
                                 } else if (event.threadId) {
                                     upsertContact({
                                         userId: event.threadId,
-                                        isFriend: event.type === 0 ? 1 : (event.type === 1 ? 0 : null),
-                                        lastActive: Date.now()
+                                        isFriend: event.type === 0 ? 1 : event.type === 1 ? 0 : null,
+                                        lastActive: Date.now(),
                                     });
                                 }
                             } catch (e) {
@@ -259,34 +279,42 @@ export function registerListenCommand(program) {
                         if (getDb()) {
                             try {
                                 const groupId = event.threadId;
-                                const chatExists = getDb().prepare("SELECT 1 FROM chats WHERE thread_id = ?").get(groupId);
+                                const chatExists = getDb()
+                                    .prepare("SELECT 1 FROM chats WHERE thread_id = ?")
+                                    .get(groupId);
                                 if (!chatExists) {
                                     upsertChat({
                                         threadId: groupId,
                                         type: 1, // Group
-                                        updatedAt: Date.now()
+                                        updatedAt: Date.now(),
                                     });
                                 }
-                                getDb().prepare("INSERT OR IGNORE INTO groups (group_id, name, updated_at) VALUES (?, ?, ?)")
+                                getDb()
+                                    .prepare(
+                                        "INSERT OR IGNORE INTO groups (group_id, name, updated_at) VALUES (?, ?, ?)",
+                                    )
                                     .run(groupId, event.data?.name || null, Date.now());
 
                                 if (event.data?.members) {
                                     for (const m of event.data.members) {
                                         upsertGroupParticipant(groupId, m.uid || m.userId, {
-                                            role: m.role || 'member',
-                                            displayName: m.displayName || m.name || null
+                                            role: m.role || "member",
+                                            displayName: m.displayName || m.name || null,
                                         });
                                     }
                                 }
                                 if (event.data?.uid || event.data?.userId) {
                                     const uid = event.data.uid || event.data.userId;
-                                    if (event.type === 'left' || event.type === 'removed') {
-                                        getDb().prepare("DELETE FROM group_participants WHERE group_id = ? AND user_id = ?")
+                                    if (event.type === "left" || event.type === "removed") {
+                                        getDb()
+                                            .prepare(
+                                                "DELETE FROM group_participants WHERE group_id = ? AND user_id = ?",
+                                            )
                                             .run(groupId, uid);
                                     } else {
                                         upsertGroupParticipant(groupId, uid, {
-                                            role: event.data.role || 'member',
-                                            displayName: event.data.displayName || event.data.name || null
+                                            role: event.data.role || "member",
+                                            displayName: event.data.displayName || event.data.name || null,
                                         });
                                     }
                                 }

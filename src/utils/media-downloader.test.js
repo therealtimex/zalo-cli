@@ -71,7 +71,7 @@ describe("Media Downloader Utility", () => {
 
         it("downloads file stream and sets correct file permissions", async () => {
             // Mock global fetch
-            globalThis.fetch = async (url) => {
+            globalThis.fetch = async (_url) => {
                 return {
                     ok: true,
                     status: 200,
@@ -86,13 +86,7 @@ describe("Media Downloader Utility", () => {
 
             const ownId = "user_download_test";
             const msgId = "msg_12345";
-            const localPath = await downloadAttachment(
-                ownId,
-                msgId,
-                "images",
-                "https://zalo.cdn/test.jpg",
-                "test.jpg"
-            );
+            const localPath = await downloadAttachment(ownId, msgId, "images", "https://zalo.cdn/test.jpg", "test.jpg");
 
             // Verify file exists
             assert.ok(fs.existsSync(localPath), "Downloaded file should exist on disk");
@@ -108,7 +102,7 @@ describe("Media Downloader Utility", () => {
         });
 
         it("throws error for non-ok HTTP responses", async () => {
-            globalThis.fetch = async (url) => {
+            globalThis.fetch = async (_url) => {
                 return {
                     ok: false,
                     status: 404,
@@ -117,7 +111,7 @@ describe("Media Downloader Utility", () => {
 
             await assert.rejects(
                 downloadAttachment("user_download_test", "msg_fail", "images", "https://zalo.cdn/404.jpg", "404.jpg"),
-                /HTTP error 404 fetching/
+                /HTTP error 404 fetching/,
             );
         });
     });

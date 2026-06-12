@@ -36,7 +36,10 @@ export function registerLoginCommands(program) {
                     const proxy = opts.proxy || raw.proxy || null;
                     if (proxy) info(`Using proxy: ${maskProxy(proxy)}`);
 
-                    const { ownId } = await loginWithCredentials(raw, proxy, { readonly: program.opts().readOnly, lockWait: program.opts().lockWait });
+                    const { ownId } = await loginWithCredentials(raw, proxy, {
+                        readonly: program.opts().readOnly,
+                        lockWait: program.opts().lockWait,
+                    });
 
                     let displayName = opts.name || raw.name || "";
                     try {
@@ -62,14 +65,18 @@ export function registerLoginCommands(program) {
 
             let qrServer = null;
             try {
-                const { ownId } = await loginWithQR(opts.proxy, (event) => {
-                    displayQR(event);
+                const { ownId } = await loginWithQR(
+                    opts.proxy,
+                    (event) => {
+                        displayQR(event);
 
-                    // Always start HTTP server for QR scanning (no flag needed)
-                    if (!qrServer) {
-                        qrServer = startQrServer(getQRPath(), opts.qrPort || 18927);
-                    }
-                }, { readonly: program.opts().readOnly, lockWait: program.opts().lockWait });
+                        // Always start HTTP server for QR scanning (no flag needed)
+                        if (!qrServer) {
+                            qrServer = startQrServer(getQRPath(), opts.qrPort || 18927);
+                        }
+                    },
+                    { readonly: program.opts().readOnly, lockWait: program.opts().lockWait },
+                );
 
                 // Fetch display name from Zalo profile
                 let displayName = opts.name || "";

@@ -11,10 +11,7 @@ import { homedir } from "os";
 export const CONFIG_DIR = process.env.ZALO_CONFIG_DIR || join(homedir(), ".zalo-agent-cli");
 export const CREDENTIALS_DIR = join(CONFIG_DIR, "credentials");
 
-/** Ensure config directories exist. */
-function ensureDirs() {
-    mkdirSync(CREDENTIALS_DIR, { recursive: true });
-}
+
 
 /**
  * Save credentials for a specific account.
@@ -92,4 +89,3 @@ export function deleteCredentials(ownId) {
     }
     return deleted;
 }
-

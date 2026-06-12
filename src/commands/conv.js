@@ -37,14 +37,14 @@ export function registerConvCommands(program) {
                                         zaloName: f.zaloName || null,
                                         avatarUrl: f.avatar || null,
                                         isFriend: 1,
-                                        lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null
+                                        lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null,
                                     });
                                     if (f.lastActionTime > 0) {
                                         upsertChat({
                                             threadId: f.userId,
                                             type: 0,
                                             name: f.displayName || f.zaloName || "?",
-                                            lastMessageTs: f.lastActionTime * 1000
+                                            lastMessageTs: f.lastActionTime * 1000,
                                         });
                                     }
                                 } catch {}
@@ -88,7 +88,7 @@ export function registerConvCommands(program) {
                                                     ownerId: g.creatorId || null,
                                                     creatorId: g.creatorId || null,
                                                     createdTs: g.createdTime ? Number(g.createdTime) : null,
-                                                    memberCount: g.totalMember || 0
+                                                    memberCount: g.totalMember || 0,
                                                 });
                                             } catch {}
                                         }
@@ -112,7 +112,7 @@ export function registerConvCommands(program) {
                         conversations = getLocalChats({
                             friendsOnly: opts.friendsOnly,
                             groupsOnly: opts.groupsOnly,
-                            limit
+                            limit,
                         });
                     } else {
                         throw apiErr;
