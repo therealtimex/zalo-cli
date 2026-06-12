@@ -59,13 +59,13 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 ### Cách 1: Cài đặt nhanh bằng 1 câu lệnh
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/PhucMPham/zalo-agent-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/therealtimex/zalo-cli/main/install.sh | bash
 ```
 
 ### Cách 2: Cài đặt qua npm
 
 ```bash
-npm install -g zalo-agent-cli
+npm install -g @realtimex/zalo-cli
 ```
 
 ## Bắt đầu nhanh
@@ -195,13 +195,13 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 **One-command installation:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/PhucMPham/zalo-agent-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/therealtimex/zalo-cli/main/install.sh | bash
 ```
 
 **Alternative global install via npm:**
 
 ```bash
-npm install -g zalo-agent-cli
+npm install -g @realtimex/zalo-cli
 ```
 
 **Getting started:**

@@ -1,6 +1,6 @@
 #!/bin/bash
-# zalo-agent-cli One-Command Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/PhucMPham/zalo-agent-cli/main/install.sh | bash
+# @realtimex/zalo-cli One-Command Installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/therealtimex/zalo-cli/main/install.sh | bash
 
 set -e
 
@@ -11,13 +11,13 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0;37m' # No Color
 
-echo -e "${BLUE}=== zalo-agent-cli Installer ===${NC}"
+echo -e "${BLUE}=== @realtimex/zalo-cli Installer ===${NC}"
 echo "Checking environment..."
 
 # 1. Check if Node.js is installed
 if ! command -v node >/dev/null 2>&1; then
     echo -e "${RED}Error: Node.js is not installed.${NC}"
-    echo "Please install Node.js (v20 or newer) to run zalo-agent-cli."
+    echo "Please install Node.js (v20 or newer) to run @realtimex/zalo-cli."
     echo -e "You can install it via your package manager or from: ${BLUE}https://nodejs.org/${NC}"
     exit 1
 fi
@@ -28,7 +28,7 @@ NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d'.' -f1)
 
 if [ "$NODE_MAJOR" -lt 20 ]; then
     echo -e "${RED}Error: Node.js version $NODE_VERSION is too old.${NC}"
-    echo "zalo-agent-cli requires Node.js v20 or newer."
+    echo "@realtimex/zalo-cli requires Node.js v20 or newer."
     echo "Please upgrade your Node.js installation."
     exit 1
 fi
@@ -43,9 +43,9 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 # 4. Perform global install
-echo "Installing zalo-agent-cli globally..."
+echo "Installing @realtimex/zalo-cli globally..."
 
-install_cmd="npm install -g zalo-agent-cli@latest"
+install_cmd="npm install -g @realtimex/zalo-cli@latest"
 
 # Try running without sudo first
 if $install_cmd; then
@@ -66,5 +66,5 @@ else
 fi
 
 echo -e "\n${GREEN}=== Success! ===${NC}"
-echo "zalo-agent-cli has been successfully installed."
+echo "@realtimex/zalo-cli has been successfully installed."
 echo -e "Run ${BLUE}zalo-agent login${NC} to authenticate your Zalo account and get started!"
