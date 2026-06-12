@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.2] - 2026-06-12
+
+### Changed
+
+- **`sync --delay` default raised from 200ms to 2000ms** — more conservative default to reliably avoid Zalo rate limiting across all group history fetches.
+
 ## [1.8.1] - 2026-06-12
 
 ### Added

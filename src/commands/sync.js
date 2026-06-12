@@ -27,7 +27,7 @@ export function registerSyncCommand(program) {
             "--delay <ms>",
             "Delay in milliseconds between group history requests to avoid rate limiting",
             parseInt,
-            200,
+            2000,
         )
         .option("--timeout <ms>", "Timeout in milliseconds waiting for message history response", parseInt, 15000)
         .option("--download-media", "Download media attachments for synced messages in the background")
