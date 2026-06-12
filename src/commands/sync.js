@@ -277,6 +277,8 @@ export function registerSyncCommand(program) {
                             } catch {}
                         }
                     } catch {}
+                    // Avoid rate-limiting on rapid sequential history fetches
+                    await new Promise((r) => setTimeout(r, 200));
                 }
 
                 let mediaDownloaded = 0;

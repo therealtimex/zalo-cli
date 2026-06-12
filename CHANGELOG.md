@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0] - 2026-06-12
+
+### Fixed
+
+- **`sync` group history only fetched ~5 groups** — rapid sequential `getGroupChatHistory` calls caused Zalo to rate-limit most requests silently. Added 200ms delay between group fetches to stay within rate limits. With 360 groups and `--per-thread 20`, this adds ~72s but reliably fetches all groups.
+
 ## [1.7.9] - 2026-06-12
 
 ### Changed
