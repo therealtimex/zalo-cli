@@ -26,6 +26,7 @@ import { registerQuickMsgCommands } from "./commands/quick-msg.js";
 import { registerLabelCommands } from "./commands/label.js";
 import { registerCatalogCommands } from "./commands/catalog.js";
 import { registerListenCommand } from "./commands/listen.js";
+import { registerSyncCommand } from "./commands/sync.js";
 import { registerOACommands } from "./commands/oa.js";
 import { registerMCPCommands } from "./commands/mcp.js";
 import { autoLogin } from "./core/zalo-client.js";
@@ -94,6 +95,7 @@ registerQuickMsgCommands(program);
 registerLabelCommands(program);
 registerCatalogCommands(program);
 registerListenCommand(program);
+registerSyncCommand(program);
 registerOACommands(program);
 registerMCPCommands(program);
 

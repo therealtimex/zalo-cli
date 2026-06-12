@@ -102,4 +102,20 @@ describe("CLI interface", () => {
         const out = run("account", "list");
         assert.match(out, /No accounts/);
     });
+
+    it("sync --help lists all sync flags", () => {
+        const out = run("sync", "--help");
+        assert.match(out, /--msg-limit/);
+        assert.match(out, /--timeout/);
+        assert.match(out, /--download-media/);
+    });
+
+    it("sync fails on clean state since not logged in", () => {
+        try {
+            run("sync");
+            assert.fail("sync should have failed when not logged in");
+        } catch (e) {
+            assert.match(e.stdout || e.message, /Not logged in/);
+        }
+    });
 });
