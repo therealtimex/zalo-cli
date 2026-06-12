@@ -251,13 +251,27 @@ export function registerSyncCommand(program) {
                 }
 
                 // 2. Sync Group history via HTTP per group (includes both sent and received messages)
-                if (!jsonMode) info("Fetching Group message history...");
+                if (!jsonMode) info(`Fetching group message history (${groupIds.length} groups, ${delay}ms delay)...`);
                 let groupMsgsCount = 0;
+                let groupsWithMsgs = 0;
+                let groupsEmpty = 0;
+                let groupsErrored = 0;
 
-                for (const gid of groupIds) {
+                for (let gi = 0; gi < groupIds.length; gi++) {
+                    const gid = groupIds[gi];
+                    if (!jsonMode && gi % 20 === 0 && gi > 0) {
+                        info(
+                            `  Group history progress: ${gi}/${groupIds.length} (${groupsWithMsgs} with messages, ${groupsErrored} errors)`,
+                        );
+                    }
                     try {
                         const history = await api.getGroupChatHistory(gid, perThread);
                         const msgs = history?.groupMsgs || [];
+                        if (msgs.length === 0) {
+                            groupsEmpty++;
+                        } else {
+                            groupsWithMsgs++;
+                        }
                         for (const msg of msgs) {
                             const msgId = msg.data?.msgId;
                             if (!msgId) continue;
@@ -283,9 +297,15 @@ export function registerSyncCommand(program) {
                                 groupMsgsCount++;
                             } catch {}
                         }
-                    } catch {}
+                    } catch {
+                        groupsErrored++;
+                    }
                     await new Promise((r) => setTimeout(r, delay));
                 }
+                if (!jsonMode)
+                    info(
+                        `  Group history done: ${groupsWithMsgs} with messages, ${groupsEmpty} empty, ${groupsErrored} errors`,
+                    );
 
                 let mediaDownloaded = 0;
                 if (opts.downloadMedia) {
@@ -330,6 +350,7 @@ export function registerSyncCommand(program) {
                         contacts_synced: contactsCount,
                         groups_synced: groupsCount,
                         messages_synced: dmCount + groupMsgsCount,
+                        group_history: { with_messages: groupsWithMsgs, empty: groupsEmpty, errors: groupsErrored },
                         ...(opts.downloadMedia && { media_downloaded: mediaDownloaded }),
                     },
                     jsonMode,

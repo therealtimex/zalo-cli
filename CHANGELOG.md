@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.3] - 2026-06-12
+
+### Changed
+
+- **`sync` group history now logs per-group progress** — every 20 groups it prints `[X/total] N with messages, M errors` so you can see the sync is running and how many groups have accessible history. Also adds per-group breakdown (`with_messages`, `empty`, `errors`) to `--json` output.
+
 ## [1.8.2] - 2026-06-12
 
 ### Changed
