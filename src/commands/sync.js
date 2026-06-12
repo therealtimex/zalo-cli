@@ -112,7 +112,7 @@ export function registerSyncCommand(program) {
                 // self-sent messages; HTTP endpoint returns all messages including received ones).
                 let getDMChatHistoryHttp = null;
                 try {
-                    api.custom("_getDMChatHistory", async ({ ctx, utils, props }) => {
+                    api.custom("_getDMChatHistory", async ({ utils, props }) => {
                         const { userId, count } = props;
                         const serviceURL = utils.makeURL(`${api.zpwServiceMap.chat[0]}/api/message/history`);
                         const encryptedParams = utils.encodeAES(JSON.stringify({ toid: userId, count }));
@@ -120,13 +120,11 @@ export function registerSyncCommand(program) {
                         const url = utils.makeURL(serviceURL, { params: encryptedParams });
                         const response = await utils.request(url, { method: "GET" });
                         return utils.resolve(response, (result) => {
-                            const data =
-                                typeof result.data === "string" ? JSON.parse(result.data) : result.data;
+                            const data = typeof result.data === "string" ? JSON.parse(result.data) : result.data;
                             return data?.msgs || [];
                         });
                     });
-                    getDMChatHistoryHttp = (userId, count) =>
-                        api._getDMChatHistory({ userId, count });
+                    getDMChatHistoryHttp = (userId, count) => api._getDMChatHistory({ userId, count });
                 } catch {}
 
                 // 1. Sync DM history — try HTTP per friend, fall back to WS global feed
@@ -138,25 +136,20 @@ export function registerSyncCommand(program) {
                     for (const friend of friends) {
                         if (dmCount >= msgLimit) break;
                         try {
-                            const msgs = await getDMChatHistoryHttp(
-                                friend.userId,
-                                Math.min(50, msgLimit - dmCount),
-                            );
+                            const msgs = await getDMChatHistoryHttp(friend.userId, Math.min(50, msgLimit - dmCount));
                             if (msgs.length > 0) httpDmWorked = true;
                             for (const rawMsg of msgs) {
                                 if (dmCount >= msgLimit) break;
                                 const msgId = rawMsg.msgId;
                                 if (!msgId) continue;
-                                const isSelf = rawMsg.uidFrom == "0";
+                                const isSelf = rawMsg.uidFrom === "0";
                                 const senderId = isSelf ? ownId : rawMsg.uidFrom || null;
                                 const text =
                                     typeof rawMsg.content === "string"
                                         ? rawMsg.content
                                         : extractMessageText(rawMsg.content, rawMsg.msgType);
                                 const msgType =
-                                    typeof rawMsg.content === "string"
-                                        ? "text"
-                                        : rawMsg.msgType || "attachment";
+                                    typeof rawMsg.content === "string" ? "text" : rawMsg.msgType || "attachment";
                                 try {
                                     upsertMessage({
                                         msgId,
@@ -181,10 +174,7 @@ export function registerSyncCommand(program) {
                 if (!httpDmWorked) {
                     if (!jsonMode) info("Connecting listener for DM history fallback...");
                     await new Promise((resolve, reject) => {
-                        const timer = setTimeout(
-                            () => reject(new Error("Listener connection timeout")),
-                            15000,
-                        );
+                        const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 15000);
                         api.listener.on("connected", () => {
                             clearTimeout(timer);
                             resolve();
@@ -226,9 +216,7 @@ export function registerSyncCommand(program) {
                                     ? msg.data.content
                                     : extractMessageText(msg.data?.content, msg.data?.msgType);
                             const msgType =
-                                typeof msg.data?.content === "string"
-                                    ? "text"
-                                    : msg.data?.msgType || "attachment";
+                                typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment";
                             try {
                                 upsertMessage({
                                     msgId,
@@ -276,9 +264,7 @@ export function registerSyncCommand(program) {
                                     ? msg.data.content
                                     : extractMessageText(msg.data?.content, msg.data?.msgType);
                             const msgType =
-                                typeof msg.data?.content === "string"
-                                    ? "text"
-                                    : msg.data?.msgType || "attachment";
+                                typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment";
                             try {
                                 upsertMessage({
                                     msgId,
