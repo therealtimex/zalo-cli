@@ -26,7 +26,8 @@ export function registerFriendCommands(program) {
                 try {
                     result = await api.getAllFriends();
                     if (db) {
-                        const friends = Array.isArray(result) ? result : [];
+                        const profiles = result?.changed_profiles || result || {};
+                        const friends = Array.isArray(profiles) ? profiles : Object.values(profiles);
                         for (const f of friends) {
                             try {
                                 upsertContact({
@@ -86,7 +87,8 @@ export function registerFriendCommands(program) {
                 try {
                     result = await api.getAllFriends();
                     if (db) {
-                        const friends = Array.isArray(result) ? result : [];
+                        const profiles = result?.changed_profiles || result || {};
+                        const friends = Array.isArray(profiles) ? profiles : Object.values(profiles);
                         for (const f of friends) {
                             try {
                                 upsertContact({
@@ -110,7 +112,8 @@ export function registerFriendCommands(program) {
                     }
                 }
 
-                const friends = Array.isArray(result) ? result : [];
+                const profilesList = result?.changed_profiles || result || {};
+                const friends = Array.isArray(profilesList) ? profilesList : Object.values(profilesList);
                 const query = name.toLowerCase();
                 const matches = friends.filter((f) => {
                     const dn = (f.displayName || "").toLowerCase();

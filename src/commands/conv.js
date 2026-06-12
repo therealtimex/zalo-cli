@@ -25,7 +25,8 @@ export function registerConvCommands(program) {
                     // Fetch friends (sorted by lastActionTime = most recent interaction)
                     if (!opts.groupsOnly) {
                         const friends = await api.getAllFriends();
-                        const list = Array.isArray(friends) ? friends : [];
+                        const profiles = friends?.changed_profiles || friends || {};
+                        const list = Array.isArray(profiles) ? profiles : Object.values(profiles);
                         if (db) {
                             for (const f of list) {
                                 try {
