@@ -7,6 +7,7 @@ import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
+import { getDb, getLocalMessages, getLocalMessagesCount, getOldestMessageId, upsertMessage } from "../core/db.js";
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -500,10 +501,40 @@ export function registerMsgCommands(program) {
                     info(`Warning: fetching up to ${limit} messages. Large history may use significant memory and bandwidth.`);
                 }
 
+                const db = getDb();
+                let allMessages = [];
+
+                if (db) {
+                    const localCount = getLocalMessagesCount(threadId);
+                    if (localCount >= limit) {
+                        allMessages = getLocalMessages(threadId, limit);
+                        allMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+                        output(
+                            { threadId, threadType: threadType === 0 ? "dm" : "group", count: allMessages.length, messages: allMessages },
+                            jsonMode,
+                            () => {
+                                success(`${allMessages.length} message(s) from ${threadId} (loaded from local cache)`);
+                                for (const m of allMessages) {
+                                    const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                                    const name = m.senderName || m.senderId || "?";
+                                    console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
+                                }
+                            },
+                        );
+                        process.exit(0);
+                    }
+                }
+
                 const api = getApi();
-                const allMessages = [];
                 let lastMsgId = null;
+
+                if (db) {
+                    lastMsgId = getOldestMessageId(threadId);
+                }
+
                 let done = false;
+                const fetchedMessages = [];
 
                 // Start listener (required for WebSocket requestOldMessages)
                 await new Promise((resolve, reject) => {
@@ -519,8 +550,11 @@ export function registerMsgCommands(program) {
                     api.listener.start({ retryOnClose: false });
                 });
 
+                const localCount = db ? getLocalMessagesCount(threadId) : 0;
+                const needed = limit - localCount;
+
                 // Fetch pages until limit reached or no more messages
-                while (!done && allMessages.length < limit) {
+                while (!done && fetchedMessages.length < needed) {
                     const pageMessages = await new Promise((resolve) => {
                         const handler = (messages) => {
                             clearTimeout(timer);
@@ -542,13 +576,13 @@ export function registerMsgCommands(program) {
                     }
 
                     for (const msg of pageMessages) {
-                        if (allMessages.length >= limit) break;
                         // API returns messages globally — filter to requested thread
                         const msgThread = String(msg.threadId || "");
                         const msgSender = String(msg.data?.uidFrom || "");
                         const target = String(threadId);
                         if (msgThread !== target && msgSender !== target) continue;
-                        allMessages.push({
+
+                        const parsedMsg = {
                             msgId: msg.data?.msgId,
                             threadId: msg.threadId,
                             senderId: msg.data?.uidFrom || null,
@@ -558,7 +592,24 @@ export function registerMsgCommands(program) {
                                 : extractMessageText(msg.data?.content, msg.data?.msgType),
                             timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
                             type: typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment",
-                        });
+                        };
+
+                        fetchedMessages.push(parsedMsg);
+
+                        if (db) {
+                            upsertMessage({
+                                msgId: msg.data?.msgId,
+                                threadId: msg.threadId,
+                                senderId: msg.data?.uidFrom || null,
+                                senderName: msg.data?.dName || null,
+                                ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
+                                fromMe: msg.isSelf ? 1 : 0,
+                                text: parsedMsg.text,
+                                msgType: parsedMsg.type,
+                                contentJson: JSON.stringify(msg.data),
+                                recalled: msg.data?.recalled ?? 0
+                            });
+                        }
                     }
 
                     // Use last message's actionId for pagination
@@ -568,6 +619,12 @@ export function registerMsgCommands(program) {
                         done = true;
                     }
                     lastMsgId = nextId;
+                }
+
+                if (db) {
+                    allMessages = getLocalMessages(threadId, limit);
+                } else {
+                    allMessages = fetchedMessages.slice(0, limit);
                 }
 
                 // Sort by timestamp (oldest first)

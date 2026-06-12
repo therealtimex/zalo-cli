@@ -3,7 +3,8 @@
  */
 
 import { getApi } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { getDb, upsertChat, upsertContact, upsertGroup, getLocalChats } from "../core/db.js";
 
 export function registerConvCommands(program) {
     const conv = program.command("conv").description("Manage conversations");
@@ -17,54 +18,103 @@ export function registerConvCommands(program) {
             try {
                 const api = getApi();
                 const limit = Number(opts.limit);
-                const conversations = [];
+                const db = getDb();
+                let conversations = [];
 
-                // Fetch friends (sorted by lastActionTime = most recent interaction)
-                if (!opts.groupsOnly) {
-                    const friends = await api.getAllFriends();
-                    const list = Array.isArray(friends) ? friends : [];
-                    const sorted = list
-                        .filter((f) => f.lastActionTime > 0)
-                        .sort((a, b) => b.lastActionTime - a.lastActionTime)
-                        .slice(0, limit);
-                    for (const f of sorted) {
-                        conversations.push({
-                            threadId: f.userId,
-                            name: f.displayName || f.zaloName || "?",
-                            type: "User",
-                            typeFlag: 0,
-                            lastActive: new Date(f.lastActionTime * 1000).toLocaleString(),
-                        });
-                    }
-                }
-
-                // Fetch groups
-                if (!opts.friendsOnly) {
-                    const groupsResult = await api.getAllGroups();
-                    const groupIds = Object.keys(groupsResult?.gridVerMap || {});
-                    if (groupIds.length > 0) {
-                        const batchSize = 50;
-                        const batches = [];
-                        for (let i = 0; i < Math.min(groupIds.length, limit); i += batchSize) {
-                            batches.push(groupIds.slice(i, i + batchSize));
-                        }
-                        for (const batch of batches) {
-                            try {
-                                const groupInfo = await api.getGroupInfo(batch);
-                                const map = groupInfo?.gridInfoMap || {};
-                                for (const [gid, g] of Object.entries(map)) {
-                                    conversations.push({
-                                        threadId: gid,
-                                        name: g.name || "?",
-                                        type: "Group",
-                                        typeFlag: 1,
-                                        memberCount: g.totalMember || 0,
+                try {
+                    // Fetch friends (sorted by lastActionTime = most recent interaction)
+                    if (!opts.groupsOnly) {
+                        const friends = await api.getAllFriends();
+                        const list = Array.isArray(friends) ? friends : [];
+                        if (db) {
+                            for (const f of list) {
+                                try {
+                                    upsertContact({
+                                        userId: f.userId,
+                                        phoneNumber: f.phoneNumber || null,
+                                        displayName: f.displayName || null,
+                                        zaloName: f.zaloName || null,
+                                        avatarUrl: f.avatar || null,
+                                        isFriend: 1,
+                                        lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null
                                     });
-                                }
-                            } catch {
-                                // Skip failed batch
+                                    if (f.lastActionTime > 0) {
+                                        upsertChat({
+                                            threadId: f.userId,
+                                            type: 0,
+                                            name: f.displayName || f.zaloName || "?",
+                                            lastMessageTs: f.lastActionTime * 1000
+                                        });
+                                    }
+                                } catch {}
                             }
                         }
+                        const sorted = list
+                            .filter((f) => f.lastActionTime > 0)
+                            .sort((a, b) => b.lastActionTime - a.lastActionTime)
+                            .slice(0, limit);
+                        for (const f of sorted) {
+                            conversations.push({
+                                threadId: f.userId,
+                                name: f.displayName || f.zaloName || "?",
+                                type: "User",
+                                typeFlag: 0,
+                                lastActive: new Date(f.lastActionTime * 1000).toLocaleString(),
+                            });
+                        }
+                    }
+
+                    // Fetch groups
+                    if (!opts.friendsOnly) {
+                        const groupsResult = await api.getAllGroups();
+                        const groupIds = Object.keys(groupsResult?.gridVerMap || {});
+                        if (groupIds.length > 0) {
+                            const batchSize = 50;
+                            const batches = [];
+                            for (let i = 0; i < Math.min(groupIds.length, limit); i += batchSize) {
+                                batches.push(groupIds.slice(i, i + batchSize));
+                            }
+                            for (const batch of batches) {
+                                try {
+                                    const groupInfo = await api.getGroupInfo(batch);
+                                    const map = groupInfo?.gridInfoMap || {};
+                                    for (const [gid, g] of Object.entries(map)) {
+                                        if (db) {
+                                            try {
+                                                upsertGroup({
+                                                    groupId: gid,
+                                                    name: g.name,
+                                                    ownerId: g.creatorId || null,
+                                                    creatorId: g.creatorId || null,
+                                                    createdTs: g.createdTime ? Number(g.createdTime) : null,
+                                                    memberCount: g.totalMember || 0
+                                                });
+                                            } catch {}
+                                        }
+                                        conversations.push({
+                                            threadId: gid,
+                                            name: g.name || "?",
+                                            type: "Group",
+                                            typeFlag: 1,
+                                            memberCount: g.totalMember || 0,
+                                        });
+                                    }
+                                } catch {
+                                    // Skip failed batch
+                                }
+                            }
+                        }
+                    }
+                } catch (apiErr) {
+                    if (db) {
+                        warning(`Offline fallback: Zalo API unreachable. Loading from local SQLite cache.`);
+                        conversations = getLocalChats({
+                            friendsOnly: opts.friendsOnly,
+                            groupsOnly: opts.groupsOnly,
+                            limit
+                        });
+                    } else {
+                        throw apiErr;
                     }
                 }
 
@@ -78,7 +128,7 @@ export function registerConvCommands(program) {
                     console.log("  THREAD_ID               TYPE    NAME");
                     console.log("  " + "-".repeat(60));
                     for (const c of conversations) {
-                        const typeLabel = c.type === "Group" ? `Group(${c.memberCount})` : "User";
+                        const typeLabel = c.type === "Group" ? `Group(${c.memberCount || 0})` : "User";
                         const id = c.threadId.padEnd(22);
                         console.log(`  ${id}  ${typeLabel.padEnd(12)}  ${c.name}`);
                     }

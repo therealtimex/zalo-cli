@@ -10,6 +10,7 @@ import { ProxyAgent } from "undici";
 import { getActive } from "./accounts.js";
 import { loadCredentials } from "./credentials.js";
 import { info } from "../utils/output.js";
+import { initDatabase, closeDatabase } from "./db.js";
 
 /**
  * Read image dimensions from file header bytes (PNG, JPEG, GIF).
@@ -125,19 +126,24 @@ function setSession(api, ownId) {
 export function clearSession() {
     _api = null;
     _ownId = null;
+    closeDatabase();
 }
 
 /**
  * Login with saved credentials + proxy.
  * @param {object} creds - {imei, cookie, userAgent, language?}
  * @param {string|null} proxyUrl
+ * @param {object} dbOptions
  * @returns {object} - {api, ownId}
  */
-export async function loginWithCredentials(creds, proxyUrl = null) {
+export async function loginWithCredentials(creds, proxyUrl = null, dbOptions = {}) {
     const zalo = createZalo(proxyUrl);
     const api = await zalo.login(creds);
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
+    if (ownId) {
+        await initDatabase(ownId, dbOptions);
+    }
     return { api, ownId };
 }
 
@@ -145,9 +151,10 @@ export async function loginWithCredentials(creds, proxyUrl = null) {
  * Login via QR code with optional proxy.
  * @param {string|null} proxyUrl
  * @param {function} onQrGenerated - callback(qrData) when QR is ready
+ * @param {object} dbOptions
  * @returns {object} - {api, ownId}
  */
-export async function loginWithQR(proxyUrl = null, onQrGenerated = null) {
+export async function loginWithQR(proxyUrl = null, onQrGenerated = null, dbOptions = {}) {
     const zalo = createZalo(proxyUrl);
 
     const api = await zalo.loginQR(null, (event) => {
@@ -158,6 +165,9 @@ export async function loginWithQR(proxyUrl = null, onQrGenerated = null) {
 
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
+    if (ownId) {
+        await initDatabase(ownId, dbOptions);
+    }
     return { api, ownId };
 }
 
@@ -180,8 +190,9 @@ export function extractCredentials() {
  * Auto-login using active account from registry.
  * Called before commands that need authentication.
  * @param {boolean} jsonMode - suppress output in JSON mode
+ * @param {object} dbOptions
  */
-export async function autoLogin(jsonMode = false) {
+export async function autoLogin(jsonMode = false, dbOptions = {}) {
     if (_api) return; // Already logged in
 
     const active = getActive();
@@ -191,7 +202,7 @@ export async function autoLogin(jsonMode = false) {
     if (!creds) return;
 
     try {
-        await loginWithCredentials(creds, active.proxy || null);
+        await loginWithCredentials(creds, active.proxy || null, dbOptions);
         if (!jsonMode) {
             info(`Auto-login: ${active.name || active.ownId}`);
         }

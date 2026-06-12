@@ -3,7 +3,8 @@
  */
 
 import { getApi } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { getDb, upsertContact, getLocalFriends } from "../core/db.js";
 
 /** Extract numeric error code from zca-js error message string. */
 function extractErrorCode(msg) {
@@ -19,13 +20,42 @@ export function registerFriendCommands(program) {
         .description("List all friends")
         .action(async () => {
             try {
-                const result = await getApi().getAllFriends();
+                const api = getApi();
+                const db = getDb();
+                let result;
+                try {
+                    result = await api.getAllFriends();
+                    if (db) {
+                        const friends = Array.isArray(result) ? result : [];
+                        for (const f of friends) {
+                            try {
+                                upsertContact({
+                                    userId: f.userId,
+                                    phoneNumber: f.phoneNumber || null,
+                                    displayName: f.displayName || null,
+                                    zaloName: f.zaloName || null,
+                                    avatarUrl: f.avatar || null,
+                                    isFriend: 1,
+                                    lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null
+                                });
+                            } catch {}
+                        }
+                    }
+                } catch (apiErr) {
+                    if (db) {
+                        warning(`Offline fallback: Zalo API unreachable. Loading from local SQLite cache.`);
+                        result = getLocalFriends();
+                    } else {
+                        throw apiErr;
+                    }
+                }
+
                 output(result, program.opts().json, () => {
                     const profiles = result?.changed_profiles || result || {};
                     const entries = Object.entries(profiles);
                     info(`${entries.length} friends`);
                     for (const [uid, p] of entries) {
-                        console.log(`  ${uid}  ${p.displayName || p.zaloName || "?"}`);
+                        console.log(`  ${p.userId || uid}  ${p.displayName || p.zaloName || "?"}`);
                     }
                 });
             } catch (e) {
@@ -50,7 +80,36 @@ export function registerFriendCommands(program) {
         .description("Search friends by name (returns thread_id for messaging)")
         .action(async (name) => {
             try {
-                const result = await getApi().getAllFriends();
+                const api = getApi();
+                const db = getDb();
+                let result;
+                try {
+                    result = await api.getAllFriends();
+                    if (db) {
+                        const friends = Array.isArray(result) ? result : [];
+                        for (const f of friends) {
+                            try {
+                                upsertContact({
+                                    userId: f.userId,
+                                    phoneNumber: f.phoneNumber || null,
+                                    displayName: f.displayName || null,
+                                    zaloName: f.zaloName || null,
+                                    avatarUrl: f.avatar || null,
+                                    isFriend: 1,
+                                    lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null
+                                });
+                            } catch {}
+                        }
+                    }
+                } catch (apiErr) {
+                    if (db) {
+                        warning(`Offline fallback: Zalo API unreachable. Loading from local SQLite cache.`);
+                        result = getLocalFriends();
+                    } else {
+                        throw apiErr;
+                    }
+                }
+
                 const friends = Array.isArray(result) ? result : [];
                 const query = name.toLowerCase();
                 const matches = friends.filter((f) => {

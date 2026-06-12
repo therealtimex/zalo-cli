@@ -42,6 +42,8 @@ program
     .description("CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments")
     .version(pkg.version)
     .option("--json", "Output results as JSON (machine-readable)")
+    .option("--read-only", "Open local cache database in read-only mode")
+    .option("--lock-wait <ms>", "Milliseconds to wait for account lock", "5000")
     .hook("preAction", async (thisCommand) => {
         const cmdName = thisCommand.args?.[0] || thisCommand.name();
         // Suppress zca-js internal logs in JSON mode to keep stdout clean for piping
@@ -56,7 +58,7 @@ program
         // Auto-login before any command that needs it (skip for login/account/oa commands)
         const skipAutoLogin = ["login", "account", "help", "version", "update", "oa", "mcp"].includes(cmdName);
         if (!skipAutoLogin) {
-            await autoLogin(program.opts().json);
+            await autoLogin(program.opts().json, { readonly: program.opts().readOnly, lockWait: program.opts().lockWait });
         }
         // Non-blocking update check (skip for update command itself)
         if (cmdName !== "update") {

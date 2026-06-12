@@ -7,6 +7,8 @@ import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
 import { success, error, info, warning } from "../utils/output.js";
+import { getDb, upsertMessage, upsertContact, upsertChat, upsertGroup, upsertGroupParticipant } from "../core/db.js";
+import { extractMessageText } from "../utils/extract-message-text.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -109,6 +111,28 @@ export function registerListenCommand(program) {
                 // --- Message events ---
                 if (enabledEvents.has("message")) {
                     api.listener.on("message", async (msg) => {
+                        // Passive database sync (cache all messages first)
+                        if (getDb()) {
+                            try {
+                                upsertMessage({
+                                    msgId: msg.data.msgId,
+                                    threadId: msg.threadId,
+                                    senderId: msg.data.uidFrom || null,
+                                    senderName: msg.data.dName || null,
+                                    ts: msg.data.ts ? Number(msg.data.ts) : Date.now(),
+                                    fromMe: msg.isSelf ? 1 : 0,
+                                    text: typeof msg.data.content === "string"
+                                        ? msg.data.content
+                                        : extractMessageText(msg.data.content, msg.data.msgType),
+                                    msgType: typeof msg.data.content === "string" ? "text" : msg.data.msgType || "attachment",
+                                    contentJson: JSON.stringify(msg.data),
+                                    recalled: msg.data.recalled ?? 0
+                                });
+                            } catch (e) {
+                                console.error(`[listen] DB save failed: ${e.message}`);
+                            }
+                        }
+
                         if (opts.filter === "user" && msg.type !== THREAD_USER) return;
                         if (opts.filter === "group" && msg.type !== THREAD_GROUP) return;
                         if (!opts.self && msg.isSelf) return;
@@ -152,6 +176,28 @@ export function registerListenCommand(program) {
                 // --- Friend events ---
                 if (enabledEvents.has("friend")) {
                     api.listener.on("friend_event", async (event) => {
+                        // Passive database sync
+                        if (getDb()) {
+                            try {
+                                if (event.data?.fromUid) {
+                                    upsertContact({
+                                        userId: event.data.fromUid,
+                                        displayName: event.data.displayName || event.data.name || null,
+                                        isFriend: event.type === 0 ? 1 : (event.type === 1 ? 0 : null),
+                                        lastActive: Date.now()
+                                    });
+                                } else if (event.threadId) {
+                                    upsertContact({
+                                        userId: event.threadId,
+                                        isFriend: event.type === 0 ? 1 : (event.type === 1 ? 0 : null),
+                                        lastActive: Date.now()
+                                    });
+                                }
+                            } catch (e) {
+                                console.error(`[listen] DB friend sync failed: ${e.message}`);
+                            }
+                        }
+
                         const label = FRIEND_EVENT_LABELS[event.type] || "friend_unknown";
                         const data = {
                             event: label,
@@ -180,6 +226,46 @@ export function registerListenCommand(program) {
                 // --- Group events ---
                 if (enabledEvents.has("group")) {
                     api.listener.on("group_event", (event) => {
+                        // Passive database sync
+                        if (getDb()) {
+                            try {
+                                const groupId = event.threadId;
+                                const chatExists = getDb().prepare("SELECT 1 FROM chats WHERE thread_id = ?").get(groupId);
+                                if (!chatExists) {
+                                    upsertChat({
+                                        threadId: groupId,
+                                        type: 1, // Group
+                                        updatedAt: Date.now()
+                                    });
+                                }
+                                getDb().prepare("INSERT OR IGNORE INTO groups (group_id, name, updated_at) VALUES (?, ?, ?)")
+                                    .run(groupId, event.data?.name || null, Date.now());
+
+                                if (event.data?.members) {
+                                    for (const m of event.data.members) {
+                                        upsertGroupParticipant(groupId, m.uid || m.userId, {
+                                            role: m.role || 'member',
+                                            displayName: m.displayName || m.name || null
+                                        });
+                                    }
+                                }
+                                if (event.data?.uid || event.data?.userId) {
+                                    const uid = event.data.uid || event.data.userId;
+                                    if (event.type === 'left' || event.type === 'removed') {
+                                        getDb().prepare("DELETE FROM group_participants WHERE group_id = ? AND user_id = ?")
+                                            .run(groupId, uid);
+                                    } else {
+                                        upsertGroupParticipant(groupId, uid, {
+                                            role: event.data.role || 'member',
+                                            displayName: event.data.displayName || event.data.name || null
+                                        });
+                                    }
+                                }
+                            } catch (e) {
+                                console.error(`[listen] DB group sync failed: ${e.message}`);
+                            }
+                        }
+
                         emitEvent(
                             {
                                 event: `group_${event.type}`,
@@ -208,6 +294,20 @@ export function registerListenCommand(program) {
                         );
                     });
                 }
+
+                // --- Message Recalled / Undone ---
+                api.listener.on("undo", (event) => {
+                    if (getDb()) {
+                        try {
+                            const msgId = event.msgId || event.data?.msgId;
+                            if (msgId) {
+                                getDb().prepare("UPDATE messages SET recalled = 1 WHERE msg_id = ?").run(msgId);
+                            }
+                        } catch (e) {
+                            console.error(`[listen] DB undo failed: ${e.message}`);
+                        }
+                    }
+                });
 
                 // --- Lifecycle events (MUST be on same listener for reconnect to work) ---
                 api.listener.on("connected", () => {
