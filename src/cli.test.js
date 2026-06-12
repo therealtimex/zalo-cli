@@ -46,6 +46,13 @@ describe("CLI interface", () => {
         assert.match(out, /react/);
         assert.match(out, /delete/);
         assert.match(out, /forward/);
+        assert.match(out, /download/);
+        assert.match(out, /media-sync/);
+    });
+
+    it("listen --help lists option --download-media", () => {
+        const out = run("listen", "--help");
+        assert.match(out, /--download-media/);
     });
 
     it("friend --help lists subcommands", () => {

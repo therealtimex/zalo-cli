@@ -356,6 +356,12 @@ export function upsertMessage(msg) {
     );
 }
 
+export function updateMessageLocalPath(msgId, localPath) {
+    const db = getDb();
+    if (!db) return;
+    db.prepare("UPDATE messages SET local_path = ? WHERE msg_id = ?").run(localPath, msgId);
+}
+
 export function getLocalChats(options = {}) {
     const db = getDb();
     if (!db) return [];

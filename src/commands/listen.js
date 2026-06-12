@@ -5,10 +5,11 @@
 
 import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
-import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
+import { getApi, autoLogin, clearSession, getOwnId } from "../core/zalo-client.js";
 import { success, error, info, warning } from "../utils/output.js";
-import { getDb, upsertMessage, upsertContact, upsertChat, upsertGroup, upsertGroupParticipant } from "../core/db.js";
+import { getDb, upsertMessage, upsertContact, upsertChat, upsertGroup, upsertGroupParticipant, updateMessageLocalPath } from "../core/db.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
+import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -46,6 +47,7 @@ export function registerListenCommand(program) {
         .option("--no-self", "Exclude self-sent messages")
         .option("--auto-accept", "Auto-accept incoming friend requests")
         .option("--save <dir>", "Save messages locally as JSONL files (one file per thread, e.g. --save ./zalo-logs)")
+        .option("--download-media", "Auto-download media attachments (images, files, voice notes, stickers) to local account storage")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
             const startTime = Date.now();
@@ -130,6 +132,33 @@ export function registerListenCommand(program) {
                                 });
                             } catch (e) {
                                 console.error(`[listen] DB save failed: ${e.message}`);
+                            }
+
+                            if (opts.downloadMedia) {
+                                try {
+                                    const mediaInfo = getMediaInfo(msg.data.content, msg.data.msgType);
+                                    if (mediaInfo) {
+                                        const ownId = getOwnId();
+                                        if (ownId) {
+                                            downloadAttachment(
+                                                ownId,
+                                                msg.data.msgId,
+                                                mediaInfo.subfolder,
+                                                mediaInfo.url,
+                                                mediaInfo.filename
+                                            ).then((localPath) => {
+                                                updateMessageLocalPath(msg.data.msgId, localPath);
+                                                if (!jsonMode) {
+                                                    success(`[listen] Downloaded media for msg ${msg.data.msgId} to ${localPath}`);
+                                                }
+                                            }).catch((err) => {
+                                                console.error(`[listen] Media download failed for msg ${msg.data.msgId}: ${err.message}`);
+                                            });
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.error(`[listen] Media info extraction failed: ${e.message}`);
+                                }
                             }
                         }
 
@@ -371,6 +400,7 @@ export function registerListenCommand(program) {
                 if (opts.webhook) info(`Webhook: ${opts.webhook}`);
                 if (saveDir) info(`Save dir: ${saveDir} (JSONL per thread)`);
                 if (opts.autoAccept) info("Auto-accept friend requests: ON");
+                if (opts.downloadMedia) info("Auto-download media: ON");
             } catch (e) {
                 error(`Listen failed: ${e.message}`);
                 process.exit(1);

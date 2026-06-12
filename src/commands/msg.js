@@ -4,10 +4,11 @@
  */
 
 import { resolve } from "path";
-import { getApi } from "../core/zalo-client.js";
+import { getApi, getOwnId } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
-import { getDb, getLocalMessages, getLocalMessagesCount, getOldestMessageId, upsertMessage } from "../core/db.js";
+import { getDb, getLocalMessages, getLocalMessagesCount, getOldestMessageId, upsertMessage, updateMessageLocalPath } from "../core/db.js";
+import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -649,6 +650,131 @@ export function registerMsgCommands(program) {
             } catch (e) {
                 try { api.listener.stop(); } catch {}
                 error(`History fetch failed: ${e.message}`);
+                process.exit(1);
+            }
+        });
+
+    msg.command("download <msgId>")
+        .description("Download an attachment/media for a specific message by ID")
+        .action(async (msgId) => {
+            const jsonMode = program.opts().json;
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+                const messageRow = db.prepare("SELECT * FROM messages WHERE msg_id = ?").get(msgId);
+                if (!messageRow) {
+                    error(`Message with ID '${msgId}' not found in local cache.`);
+                    process.exit(1);
+                }
+                if (messageRow.local_path) {
+                    info(`Attachment already downloaded locally: ${messageRow.local_path}`);
+                    output({ localPath: messageRow.local_path }, jsonMode);
+                    process.exit(0);
+                }
+                let content = null;
+                try {
+                    content = JSON.parse(messageRow.content_json);
+                } catch {}
+                if (!content) {
+                    error("Message raw content could not be parsed.");
+                    process.exit(1);
+                }
+                // extract URL/filename/subfolder
+                const mediaInfo = getMediaInfo(content.content || content, messageRow.msg_type);
+                if (!mediaInfo) {
+                    error(`Message '${msgId}' is not a media message or does not contain a download URL.`);
+                    process.exit(1);
+                }
+                const ownId = getOwnId();
+                if (!ownId) {
+                    error("Could not determine current logged-in user ID.");
+                    process.exit(1);
+                }
+                if (!jsonMode) info(`Downloading ${mediaInfo.filename} (${msgId})...`);
+                const localPath = await downloadAttachment(
+                    ownId,
+                    msgId,
+                    mediaInfo.subfolder,
+                    mediaInfo.url,
+                    mediaInfo.filename
+                );
+                updateMessageLocalPath(msgId, localPath);
+                success(`Downloaded attachment to ${localPath}`);
+                output({ localPath }, jsonMode);
+                process.exit(0);
+            } catch (e) {
+                error(`Download failed: ${e.message}`);
+                process.exit(1);
+            }
+        });
+
+    msg.command("media-sync <threadId>")
+        .description("Sync (download) all media attachments for a conversation")
+        .action(async (threadId) => {
+            const jsonMode = program.opts().json;
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+                const ownId = getOwnId();
+                if (!ownId) {
+                    error("Could not determine current logged-in user ID.");
+                    process.exit(1);
+                }
+                const rows = db.prepare(`
+                    SELECT msg_id, msg_type, content_json 
+                    FROM messages 
+                    WHERE thread_id = ? AND local_path IS NULL AND recalled = 0 AND msg_type != 'text'
+                `).all(threadId);
+
+                if (!rows || rows.length === 0) {
+                    info(`No undownloaded media attachments found in local cache for thread '${threadId}'.`);
+                    output({ successCount: 0, failCount: 0 }, jsonMode);
+                    process.exit(0);
+                }
+
+                if (!jsonMode) info(`Found ${rows.length} undownloaded media message(s). Starting sync...`);
+
+                let successCount = 0;
+                let failCount = 0;
+                const downloadedPaths = [];
+
+                for (const row of rows) {
+                    let content = null;
+                    try {
+                        content = JSON.parse(row.content_json);
+                    } catch {}
+                    if (!content) continue;
+                    const mediaInfo = getMediaInfo(content.content || content, row.msg_type);
+                    if (!mediaInfo) continue;
+                    try {
+                        if (!jsonMode) info(`Downloading ${mediaInfo.filename} (${row.msg_id})...`);
+                        const localPath = await downloadAttachment(
+                            ownId,
+                            row.msg_id,
+                            mediaInfo.subfolder,
+                            mediaInfo.url,
+                            mediaInfo.filename
+                        );
+                        updateMessageLocalPath(row.msg_id, localPath);
+                        downloadedPaths.push(localPath);
+                        successCount++;
+                    } catch (err) {
+                        failCount++;
+                        if (!jsonMode) warning(`Failed to download ${row.msg_id}: ${err.message}`);
+                    }
+                }
+
+                success(`Sync complete. Successfully downloaded ${successCount} files. Fails: ${failCount}`);
+                output({ successCount, failCount, files: downloadedPaths }, jsonMode);
+                process.exit(0);
+            } catch (e) {
+                error(`Media sync failed: ${e.message}`);
                 process.exit(1);
             }
         });
