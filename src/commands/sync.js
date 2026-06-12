@@ -115,69 +115,69 @@ export function registerSyncCommand(program) {
                 const timeout = opts.timeout;
                 const ownId = getOwnId();
 
-                // Register per-friend DM chat history via HTTP (Zalo global WS feed only returns
-                // self-sent messages; HTTP endpoint returns all messages including received ones).
-                let getDMChatHistoryHttp = null;
-                try {
-                    api.custom("_getDMChatHistory", async ({ utils, props }) => {
-                        const { userId, count } = props;
-                        const serviceURL = utils.makeURL(`${api.zpwServiceMap.chat[0]}/api/message/history`);
-                        const encryptedParams = utils.encodeAES(JSON.stringify({ toid: userId, count }));
-                        if (!encryptedParams) throw new Error("Encrypt failed");
-                        const url = utils.makeURL(serviceURL, { params: encryptedParams });
-                        const response = await utils.request(url, { method: "GET" });
-                        return utils.resolve(response, (result) => {
-                            const data = typeof result.data === "string" ? JSON.parse(result.data) : result.data;
-                            return data?.msgs || [];
-                        });
-                    });
-                    getDMChatHistoryHttp = (userId, count) => api._getDMChatHistory({ userId, count });
-                } catch {}
-
-                // 1. Sync DM history — try HTTP per friend, fall back to WS global feed
-                if (!jsonMode) info("Fetching DM message history...");
+                // 1. Sync Group history via HTTP per group (includes both sent and received messages).
+                //    Must run before the WS DM session to avoid session strain from the listener.
+                if (!jsonMode) info(`Fetching group message history (${groupIds.length} groups, ${delay}ms delay)...`);
                 let dmCount = 0;
-                let httpDmWorked = false;
+                let groupMsgsCount = 0;
+                let groupsWithMsgs = 0;
+                let groupsEmpty = 0;
+                let groupsErrored = 0;
 
-                if (getDMChatHistoryHttp) {
-                    for (const friend of friends) {
-                        try {
-                            const msgs = await getDMChatHistoryHttp(friend.userId, perThread);
-                            if (msgs.length > 0) httpDmWorked = true;
-                            for (const rawMsg of msgs) {
-                                const msgId = rawMsg.msgId;
-                                if (!msgId) continue;
-                                const isSelf = rawMsg.uidFrom === "0";
-                                const senderId = isSelf ? ownId : rawMsg.uidFrom || null;
-                                const text =
-                                    typeof rawMsg.content === "string"
-                                        ? rawMsg.content
-                                        : extractMessageText(rawMsg.content, rawMsg.msgType);
-                                const msgType =
-                                    typeof rawMsg.content === "string" ? "text" : rawMsg.msgType || "attachment";
-                                try {
-                                    upsertMessage({
-                                        msgId,
-                                        threadId: friend.userId,
-                                        senderId,
-                                        senderName: rawMsg.dName || null,
-                                        ts: rawMsg.ts ? Number(rawMsg.ts) : Date.now(),
-                                        fromMe: isSelf ? 1 : 0,
-                                        text,
-                                        msgType,
-                                        contentJson: JSON.stringify(rawMsg),
-                                        recalled: rawMsg.recalled ?? 0,
-                                    });
-                                    dmCount++;
-                                } catch {}
-                            }
-                        } catch {}
+                for (let gi = 0; gi < groupIds.length; gi++) {
+                    const gid = groupIds[gi];
+                    if (!jsonMode && gi % 20 === 0 && gi > 0) {
+                        info(
+                            `  Group history progress: ${gi}/${groupIds.length} (${groupsWithMsgs} with messages, ${groupsErrored} errors)`,
+                        );
                     }
+                    try {
+                        const history = await api.getGroupChatHistory(gid, perThread);
+                        const msgs = history?.groupMsgs || [];
+                        if (msgs.length === 0) {
+                            groupsEmpty++;
+                        } else {
+                            groupsWithMsgs++;
+                        }
+                        for (const msg of msgs) {
+                            const msgId = msg.data?.msgId;
+                            if (!msgId) continue;
+                            const text =
+                                typeof msg.data?.content === "string"
+                                    ? msg.data.content
+                                    : extractMessageText(msg.data?.content, msg.data?.msgType);
+                            const msgType =
+                                typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment";
+                            try {
+                                upsertMessage({
+                                    msgId,
+                                    threadId: msg.threadId,
+                                    senderId: msg.data?.uidFrom || null,
+                                    senderName: msg.data?.dName || null,
+                                    ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
+                                    fromMe: msg.isSelf ? 1 : 0,
+                                    text,
+                                    msgType,
+                                    contentJson: JSON.stringify(msg.data),
+                                    recalled: msg.data?.recalled ?? 0,
+                                });
+                                groupMsgsCount++;
+                            } catch {}
+                        }
+                    } catch {
+                        groupsErrored++;
+                    }
+                    await new Promise((r) => setTimeout(r, delay));
                 }
+                if (!jsonMode)
+                    info(
+                        `  Group history done: ${groupsWithMsgs} with messages, ${groupsEmpty} empty, ${groupsErrored} errors`,
+                    );
 
-                // Fall back to WS global feed if HTTP didn't return any messages
-                if (!httpDmWorked) {
-                    if (!jsonMode) info("Connecting listener for DM history fallback...");
+                // 2. Sync DM history via WS global feed (self-sent messages; Zalo has no HTTP
+                //    per-friend history endpoint, so received DMs are only available in real-time).
+                if (!jsonMode) info("Fetching DM message history via WebSocket...");
+                try {
                     await new Promise((resolve, reject) => {
                         const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 15000);
                         api.listener.on("connected", () => {
@@ -244,68 +244,13 @@ export function registerSyncCommand(program) {
                         if (!nextId || nextId === lastMsgId) done = true;
                         lastMsgId = nextId;
                     }
-
+                } catch (e) {
+                    if (!jsonMode) info(`  DM history skipped: ${e.message}`);
+                } finally {
                     try {
                         api.listener.stop();
                     } catch {}
                 }
-
-                // 2. Sync Group history via HTTP per group (includes both sent and received messages)
-                if (!jsonMode) info(`Fetching group message history (${groupIds.length} groups, ${delay}ms delay)...`);
-                let groupMsgsCount = 0;
-                let groupsWithMsgs = 0;
-                let groupsEmpty = 0;
-                let groupsErrored = 0;
-
-                for (let gi = 0; gi < groupIds.length; gi++) {
-                    const gid = groupIds[gi];
-                    if (!jsonMode && gi % 20 === 0 && gi > 0) {
-                        info(
-                            `  Group history progress: ${gi}/${groupIds.length} (${groupsWithMsgs} with messages, ${groupsErrored} errors)`,
-                        );
-                    }
-                    try {
-                        const history = await api.getGroupChatHistory(gid, perThread);
-                        const msgs = history?.groupMsgs || [];
-                        if (msgs.length === 0) {
-                            groupsEmpty++;
-                        } else {
-                            groupsWithMsgs++;
-                        }
-                        for (const msg of msgs) {
-                            const msgId = msg.data?.msgId;
-                            if (!msgId) continue;
-                            const text =
-                                typeof msg.data?.content === "string"
-                                    ? msg.data.content
-                                    : extractMessageText(msg.data?.content, msg.data?.msgType);
-                            const msgType =
-                                typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment";
-                            try {
-                                upsertMessage({
-                                    msgId,
-                                    threadId: msg.threadId,
-                                    senderId: msg.data?.uidFrom || null,
-                                    senderName: msg.data?.dName || null,
-                                    ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
-                                    fromMe: msg.isSelf ? 1 : 0,
-                                    text,
-                                    msgType,
-                                    contentJson: JSON.stringify(msg.data),
-                                    recalled: msg.data?.recalled ?? 0,
-                                });
-                                groupMsgsCount++;
-                            } catch {}
-                        }
-                    } catch {
-                        groupsErrored++;
-                    }
-                    await new Promise((r) => setTimeout(r, delay));
-                }
-                if (!jsonMode)
-                    info(
-                        `  Group history done: ${groupsWithMsgs} with messages, ${groupsEmpty} empty, ${groupsErrored} errors`,
-                    );
 
                 let mediaDownloaded = 0;
                 if (opts.downloadMedia) {

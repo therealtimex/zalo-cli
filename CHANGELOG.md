@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.4] - 2026-06-12
+
+### Fixed
+
+- **`sync` group history: all groups erroring (20/20 errors)** — root cause was two bugs: (1) the DM HTTP per-friend endpoint (`/api/message/history`) returns 404 for every friend, causing 1341 wasted requests that strained the Zalo session before group fetches began; (2) the WebSocket DM listener was started before group HTTP calls, further contaminating the session. Fix: removed the dead DM HTTP code, and moved group HTTP fetches to run **before** the DM WebSocket session. DM history (self-sent messages) still syncs via WebSocket after all group HTTP calls complete.
+
 ## [1.8.3] - 2026-06-12
 
 ### Changed
