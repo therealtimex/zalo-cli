@@ -15,6 +15,76 @@ import {
 } from "../core/db.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
+import { normalizeTimestamp, timestampOrNow } from "../utils/time.js";
+
+export function persistHistoryMessage(msg, { allowedThreadIds = null } = {}) {
+    const msgId = msg.data?.msgId;
+    if (!msgId) return false;
+
+    const threadId = String(msg.threadId || "");
+    if (allowedThreadIds && !allowedThreadIds.has(threadId)) return false;
+
+    const text =
+        typeof msg.data?.content === "string"
+            ? msg.data.content
+            : extractMessageText(msg.data?.content, msg.data?.msgType);
+    const msgType = typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment";
+
+    upsertMessage({
+        msgId,
+        threadId: msg.threadId,
+        senderId: msg.data?.uidFrom || null,
+        senderName: msg.data?.dName || null,
+        ts: timestampOrNow(msg.data?.ts),
+        fromMe: msg.isSelf ? 1 : 0,
+        text,
+        msgType,
+        contentJson: JSON.stringify(msg.data),
+        recalled: msg.data?.recalled ?? 0,
+    });
+    return true;
+}
+
+export async function waitForListenerConnected(api, timeoutMs = 15000) {
+    await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            api.listener.removeListener("connected", onConnected);
+            api.listener.removeListener("error", onError);
+            reject(new Error("Listener connection timeout"));
+        }, timeoutMs);
+        const onConnected = () => {
+            clearTimeout(timer);
+            api.listener.removeListener("error", onError);
+            resolve();
+        };
+        const onError = (err) => {
+            clearTimeout(timer);
+            api.listener.removeListener("connected", onConnected);
+            reject(err);
+        };
+        api.listener.on("connected", onConnected);
+        api.listener.on("error", onError);
+        api.listener.start({ retryOnClose: false });
+    });
+}
+
+export async function requestOldMessagesPage(api, threadType, lastMsgId, timeoutMs) {
+    return await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            api.listener.removeListener("old_messages", handler);
+            resolve([]);
+        }, timeoutMs);
+        const handler = (messages, emittedThreadType) => {
+            if (emittedThreadType !== undefined && Number(emittedThreadType) !== Number(threadType)) return;
+            clearTimeout(timer);
+            api.listener.removeListener("old_messages", handler);
+            resolve(messages);
+        };
+
+        api.listener.on("old_messages", handler);
+        api.listener.requestOldMessages(threadType, lastMsgId);
+    });
+}
 
 export function registerSyncCommand(program) {
     program
@@ -41,6 +111,7 @@ export function registerSyncCommand(program) {
             15000,
         )
         .option("--download-media", "Download media attachments for synced messages in the background")
+        .option("--debug", "Print per-thread sync errors for troubleshooting unofficial Zalo API failures")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
             let api;
@@ -72,7 +143,7 @@ export function registerSyncCommand(program) {
                             zaloName: f.zaloName || null,
                             avatarUrl: f.avatar || null,
                             isFriend: 1,
-                            lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null,
+                            lastActive: normalizeTimestamp(f.lastActionTime),
                         });
                         contactsCount++;
                         if (f.lastActionTime > 0) {
@@ -80,7 +151,7 @@ export function registerSyncCommand(program) {
                                 threadId: f.userId,
                                 type: 0,
                                 name: f.displayName || f.zaloName || "?",
-                                lastMessageTs: f.lastActionTime * 1000,
+                                lastMessageTs: normalizeTimestamp(f.lastActionTime),
                             });
                         }
                     } catch {}
@@ -104,7 +175,7 @@ export function registerSyncCommand(program) {
                                     name: g.name,
                                     ownerId: g.creatorId || null,
                                     creatorId: g.creatorId || null,
-                                    createdTs: g.createdTime ? Number(g.createdTime) : null,
+                                    createdTs: normalizeTimestamp(g.createdTime),
                                     memberCount: g.totalMember || 0,
                                 });
                                 groupsCount++;
@@ -133,6 +204,7 @@ export function registerSyncCommand(program) {
                 let groupsWithMsgs = 0;
                 let groupsEmpty = 0;
                 let groupsErrored = 0;
+                const groupErrors = [];
 
                 for (let gi = 0; gi < groupIds.length; gi++) {
                     const gid = groupIds[gi];
@@ -150,32 +222,17 @@ export function registerSyncCommand(program) {
                             groupsWithMsgs++;
                         }
                         for (const msg of msgs) {
-                            const msgId = msg.data?.msgId;
-                            if (!msgId) continue;
-                            const text =
-                                typeof msg.data?.content === "string"
-                                    ? msg.data.content
-                                    : extractMessageText(msg.data?.content, msg.data?.msgType);
-                            const msgType =
-                                typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment";
                             try {
-                                upsertMessage({
-                                    msgId,
-                                    threadId: msg.threadId,
-                                    senderId: msg.data?.uidFrom || null,
-                                    senderName: msg.data?.dName || null,
-                                    ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
-                                    fromMe: msg.isSelf ? 1 : 0,
-                                    text,
-                                    msgType,
-                                    contentJson: JSON.stringify(msg.data),
-                                    recalled: msg.data?.recalled ?? 0,
-                                });
-                                groupMsgsCount++;
+                                if (persistHistoryMessage(msg)) groupMsgsCount++;
                             } catch {}
                         }
-                    } catch {
+                    } catch (e) {
                         groupsErrored++;
+                        const summary = { groupId: gid, error: e.message };
+                        groupErrors.push(summary);
+                        if (!jsonMode && opts.debug) {
+                            info(`  Group ${gid} history error: ${e.message}`);
+                        }
                     }
                     await new Promise((r) => setTimeout(r, delay));
                 }
@@ -184,39 +241,51 @@ export function registerSyncCommand(program) {
                         `  Group history done: ${groupsWithMsgs} with messages, ${groupsEmpty} empty, ${groupsErrored} errors`,
                     );
 
-                // 2. Sync DM history via WS global feed (self-sent messages; Zalo has no HTTP
-                //    per-friend history endpoint, so received DMs are only available in real-time).
-                if (!jsonMode) info("Fetching DM message history via WebSocket...");
+                // 2. Sync message history via WS global feeds. This also acts as a fallback
+                //    when the unofficial per-group HTTP history endpoint fails for this session.
+                if (!jsonMode) info("Fetching message history via WebSocket...");
                 try {
-                    await new Promise((resolve, reject) => {
-                        const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 15000);
-                        api.listener.on("connected", () => {
-                            clearTimeout(timer);
-                            resolve();
-                        });
-                        api.listener.on("error", (err) => {
-                            clearTimeout(timer);
-                            reject(err);
-                        });
-                        api.listener.start({ retryOnClose: false });
-                    });
+                    await waitForListenerConnected(api);
+
+                    if (groupIds.length > 0 && groupsErrored > 0) {
+                        const allowedGroupIds = new Set(groupIds.map(String));
+                        const targetGroupMessages = Math.max(perThread * groupIds.length, perThread);
+                        let lastMsgId = null;
+                        let wsGroupPages = 0;
+                        let done = false;
+
+                        while (!done && groupMsgsCount < targetGroupMessages) {
+                            const pageMessages = await requestOldMessagesPage(api, 1, lastMsgId, timeout);
+
+                            if (!pageMessages || pageMessages.length === 0) {
+                                done = true;
+                                break;
+                            }
+
+                            wsGroupPages++;
+                            for (const msg of pageMessages) {
+                                try {
+                                    if (persistHistoryMessage(msg, { allowedThreadIds: allowedGroupIds })) {
+                                        groupMsgsCount++;
+                                    }
+                                } catch {}
+                            }
+
+                            const lastMsg = pageMessages[pageMessages.length - 1];
+                            const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
+                            if (!nextId || nextId === lastMsgId) done = true;
+                            lastMsgId = nextId;
+                        }
+
+                        if (!jsonMode && wsGroupPages > 0) {
+                            info(`  WebSocket group history pages received: ${wsGroupPages}`);
+                        }
+                    }
 
                     let lastMsgId = null;
                     let done = false;
                     while (!done) {
-                        const pageMessages = await new Promise((resolve) => {
-                            const handler = (messages) => {
-                                clearTimeout(timer);
-                                api.listener.removeListener("old_messages", handler);
-                                resolve(messages);
-                            };
-                            const timer = setTimeout(() => {
-                                api.listener.removeListener("old_messages", handler);
-                                resolve([]);
-                            }, timeout);
-                            api.listener.on("old_messages", handler);
-                            api.listener.requestOldMessages(0, lastMsgId);
-                        });
+                        const pageMessages = await requestOldMessagesPage(api, 0, lastMsgId, timeout);
 
                         if (!pageMessages || pageMessages.length === 0) {
                             done = true;
@@ -224,28 +293,8 @@ export function registerSyncCommand(program) {
                         }
 
                         for (const msg of pageMessages) {
-                            const msgId = msg.data?.msgId;
-                            if (!msgId) continue;
-                            const text =
-                                typeof msg.data?.content === "string"
-                                    ? msg.data.content
-                                    : extractMessageText(msg.data?.content, msg.data?.msgType);
-                            const msgType =
-                                typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment";
                             try {
-                                upsertMessage({
-                                    msgId,
-                                    threadId: msg.threadId,
-                                    senderId: msg.data?.uidFrom || null,
-                                    senderName: msg.data?.dName || null,
-                                    ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
-                                    fromMe: msg.isSelf ? 1 : 0,
-                                    text,
-                                    msgType,
-                                    contentJson: JSON.stringify(msg.data),
-                                    recalled: msg.data?.recalled ?? 0,
-                                });
-                                dmCount++;
+                                if (persistHistoryMessage(msg)) dmCount++;
                             } catch {}
                         }
 
@@ -306,6 +355,7 @@ export function registerSyncCommand(program) {
                         groups_synced: groupsCount,
                         messages_synced: dmCount + groupMsgsCount,
                         group_history: { with_messages: groupsWithMsgs, empty: groupsEmpty, errors: groupsErrored },
+                        ...(groupErrors.length > 0 && { group_history_errors: groupErrors.slice(0, 20) }),
                         ...(opts.downloadMedia && { media_downloaded: mediaDownloaded }),
                     },
                     jsonMode,

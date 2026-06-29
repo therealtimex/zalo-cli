@@ -12,11 +12,13 @@ import {
     upsertMessage,
     upsertContact,
     upsertChat,
+    upsertGroup,
     upsertGroupParticipant,
     updateMessageLocalPath,
 } from "../core/db.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
+import { normalizeTimestamp, timestampOrNow } from "../utils/time.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -37,6 +39,111 @@ const FRIEND_REQUEST_TYPE = 2;
 
 /** Zalo close code for duplicate web session */
 const CLOSE_DUPLICATE = 3000;
+
+export function persistListenMessageEvent(msg) {
+    if (!getDb()) return false;
+
+    upsertMessage({
+        msgId: msg.data.msgId,
+        threadId: msg.threadId,
+        senderId: msg.data.uidFrom || null,
+        senderName: msg.data.dName || null,
+        ts: timestampOrNow(msg.data.ts),
+        fromMe: msg.isSelf ? 1 : 0,
+        text:
+            typeof msg.data.content === "string"
+                ? msg.data.content
+                : extractMessageText(msg.data.content, msg.data.msgType),
+        msgType: typeof msg.data.content === "string" ? "text" : msg.data.msgType || "attachment",
+        contentJson: JSON.stringify(msg.data),
+        recalled: msg.data.recalled ?? 0,
+    });
+    return true;
+}
+
+export function persistListenFriendEvent(event, now = Date.now()) {
+    if (!getDb()) return false;
+
+    if (event.data?.fromUid) {
+        upsertContact({
+            userId: event.data.fromUid,
+            displayName: event.data.displayName || event.data.name || null,
+            isFriend: event.type === 0 ? 1 : event.type === 1 ? 0 : null,
+            lastActive: now,
+        });
+        return true;
+    }
+
+    if (event.threadId) {
+        upsertContact({
+            userId: event.threadId,
+            isFriend: event.type === 0 ? 1 : event.type === 1 ? 0 : null,
+            lastActive: now,
+        });
+        return true;
+    }
+
+    return false;
+}
+
+export function persistListenGroupEvent(event, now = Date.now()) {
+    if (!getDb() || !event.threadId) return false;
+
+    const db = getDb();
+    const groupId = event.threadId;
+    const data = event.data || {};
+    upsertChat({
+        threadId: groupId,
+        type: THREAD_GROUP,
+        name: data.name || data.groupName || null,
+        updatedAt: now,
+    });
+    upsertGroup({
+        groupId,
+        name: data.name || data.groupName || null,
+        ownerId: data.ownerId || data.owner_id || null,
+        creatorId: data.creatorId || data.creator_id || null,
+        createdTs: normalizeTimestamp(data.createdTs || data.created_ts),
+        memberCount: data.memberCount || data.member_count || data.members?.length || 0,
+    });
+
+    if (data.members) {
+        for (const member of data.members) {
+            const userId = member.uid || member.userId;
+            if (!userId) continue;
+            upsertGroupParticipant(groupId, userId, {
+                role: member.role || "member",
+                displayName: member.displayName || member.name || null,
+                joinedAt: normalizeTimestamp(member.joinedAt || member.joined_at),
+            });
+        }
+    }
+
+    const userId = data.uid || data.userId;
+    if (userId) {
+        if (event.type === "left" || event.type === "removed") {
+            db.prepare("DELETE FROM group_participants WHERE group_id = ? AND user_id = ?").run(groupId, userId);
+        } else {
+            upsertGroupParticipant(groupId, userId, {
+                role: data.role || "member",
+                displayName: data.displayName || data.name || null,
+                joinedAt: normalizeTimestamp(data.joinedAt || data.joined_at),
+            });
+        }
+    }
+
+    return true;
+}
+
+export function persistListenUndoEvent(event) {
+    if (!getDb()) return false;
+
+    const msgId = event.msgId || event.data?.msgId;
+    if (!msgId) return false;
+
+    getDb().prepare("UPDATE messages SET recalled = 1 WHERE msg_id = ?").run(msgId);
+    return true;
+}
 
 export function registerListenCommand(program) {
     program
@@ -126,24 +233,7 @@ export function registerListenCommand(program) {
                         // Passive database sync (cache all messages first)
                         if (getDb()) {
                             try {
-                                upsertMessage({
-                                    msgId: msg.data.msgId,
-                                    threadId: msg.threadId,
-                                    senderId: msg.data.uidFrom || null,
-                                    senderName: msg.data.dName || null,
-                                    ts: msg.data.ts ? Number(msg.data.ts) : Date.now(),
-                                    fromMe: msg.isSelf ? 1 : 0,
-                                    text:
-                                        typeof msg.data.content === "string"
-                                            ? msg.data.content
-                                            : extractMessageText(msg.data.content, msg.data.msgType),
-                                    msgType:
-                                        typeof msg.data.content === "string"
-                                            ? "text"
-                                            : msg.data.msgType || "attachment",
-                                    contentJson: JSON.stringify(msg.data),
-                                    recalled: msg.data.recalled ?? 0,
-                                });
+                                persistListenMessageEvent(msg);
                             } catch (e) {
                                 console.error(`[listen] DB save failed: ${e.message}`);
                             }
@@ -228,20 +318,7 @@ export function registerListenCommand(program) {
                         // Passive database sync
                         if (getDb()) {
                             try {
-                                if (event.data?.fromUid) {
-                                    upsertContact({
-                                        userId: event.data.fromUid,
-                                        displayName: event.data.displayName || event.data.name || null,
-                                        isFriend: event.type === 0 ? 1 : event.type === 1 ? 0 : null,
-                                        lastActive: Date.now(),
-                                    });
-                                } else if (event.threadId) {
-                                    upsertContact({
-                                        userId: event.threadId,
-                                        isFriend: event.type === 0 ? 1 : event.type === 1 ? 0 : null,
-                                        lastActive: Date.now(),
-                                    });
-                                }
+                                persistListenFriendEvent(event);
                             } catch (e) {
                                 console.error(`[listen] DB friend sync failed: ${e.message}`);
                             }
@@ -278,46 +355,7 @@ export function registerListenCommand(program) {
                         // Passive database sync
                         if (getDb()) {
                             try {
-                                const groupId = event.threadId;
-                                const chatExists = getDb()
-                                    .prepare("SELECT 1 FROM chats WHERE thread_id = ?")
-                                    .get(groupId);
-                                if (!chatExists) {
-                                    upsertChat({
-                                        threadId: groupId,
-                                        type: 1, // Group
-                                        updatedAt: Date.now(),
-                                    });
-                                }
-                                getDb()
-                                    .prepare(
-                                        "INSERT OR IGNORE INTO groups (group_id, name, updated_at) VALUES (?, ?, ?)",
-                                    )
-                                    .run(groupId, event.data?.name || null, Date.now());
-
-                                if (event.data?.members) {
-                                    for (const m of event.data.members) {
-                                        upsertGroupParticipant(groupId, m.uid || m.userId, {
-                                            role: m.role || "member",
-                                            displayName: m.displayName || m.name || null,
-                                        });
-                                    }
-                                }
-                                if (event.data?.uid || event.data?.userId) {
-                                    const uid = event.data.uid || event.data.userId;
-                                    if (event.type === "left" || event.type === "removed") {
-                                        getDb()
-                                            .prepare(
-                                                "DELETE FROM group_participants WHERE group_id = ? AND user_id = ?",
-                                            )
-                                            .run(groupId, uid);
-                                    } else {
-                                        upsertGroupParticipant(groupId, uid, {
-                                            role: event.data.role || "member",
-                                            displayName: event.data.displayName || event.data.name || null,
-                                        });
-                                    }
-                                }
+                                persistListenGroupEvent(event);
                             } catch (e) {
                                 console.error(`[listen] DB group sync failed: ${e.message}`);
                             }
@@ -356,10 +394,7 @@ export function registerListenCommand(program) {
                 api.listener.on("undo", (event) => {
                     if (getDb()) {
                         try {
-                            const msgId = event.msgId || event.data?.msgId;
-                            if (msgId) {
-                                getDb().prepare("UPDATE messages SET recalled = 1 WHERE msg_id = ?").run(msgId);
-                            }
+                            persistListenUndoEvent(event);
                         } catch (e) {
                             console.error(`[listen] DB undo failed: ${e.message}`);
                         }

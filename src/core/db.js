@@ -8,6 +8,8 @@ let _db = null;
 let _lock = null;
 let _readonly = false;
 
+const CURRENT_SCHEMA_VERSION = 1;
+
 export function getDb() {
     return _db;
 }
@@ -32,7 +34,8 @@ export async function initDatabase(ownId, options = {}) {
 
     if (!readonly) {
         // Acquire lock
-        const lockWait = parseInt(options.lockWait, 10) || 5000;
+        const parsedLockWait = Number.parseInt(options.lockWait, 10);
+        const lockWait = Number.isFinite(parsedLockWait) && parsedLockWait >= 0 ? parsedLockWait : 5000;
         _lock = new AccountLock(accountDir);
         await _lock.acquire(lockWait);
 
@@ -82,7 +85,12 @@ export function closeDatabase() {
 }
 
 function runMigrations(db) {
-    db.exec(`
+    const currentVersion = db.pragma("user_version", { simple: true });
+    if (currentVersion >= CURRENT_SCHEMA_VERSION) return;
+
+    db.transaction(() => {
+        if (currentVersion < 1) {
+            db.exec(`
         -- 1. Chats / Threads (cached channels for DM or Groups)
         CREATE TABLE IF NOT EXISTS chats (
             thread_id TEXT PRIMARY KEY,
@@ -177,7 +185,21 @@ function runMigrations(db) {
             INSERT INTO messages_fts(rowid, msg_id, thread_id, sender_name, text)
             VALUES (new.rowid, new.msg_id, new.thread_id, new.sender_name, new.text);
         END;
+
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at INTEGER NOT NULL
+        );
     `);
+
+            db.prepare(
+                "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+            ).run(1, "initial_cache_schema", Date.now());
+        }
+
+        db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+    })();
 }
 
 export function upsertChat(chat) {

@@ -90,6 +90,7 @@ zalo-agent sync
 ```
 
 Đồng bộ toàn bộ danh bạ bạn bè, nhóm và lịch sử tin nhắn gần đây vào database SQLite nội bộ để chạy mượt mà, hỗ trợ truy vấn offline và tìm kiếm nhanh.
+Cache được lưu theo tài khoản tại `~/.zalo-agent-cli/accounts/<ownId>/zalo.db`; `listen` cũng tự động ghi sự kiện mới vào cache. Dùng `--read-only` để chỉ đọc cache, hoặc `--lock-wait <ms>` để chỉnh thời gian chờ khóa tài khoản.
 
 ### 3. Tìm bạn bè
 
@@ -232,6 +233,9 @@ zalo-agent friend search "Name"            # 3. Find a friend
 zalo-agent listen                          # 4. Listen for threadId
 zalo-agent msg send <THREAD_ID> "Hello!"   # 5. Send a message
 ```
+
+Local cache is stored per account at `~/.zalo-agent-cli/accounts/<ownId>/zalo.db`. `listen` passively records new WebSocket events, while `conv recent`, `friend list`, and `msg history` read cached rows first and refresh from Zalo when available. Use `--read-only` for cache-only inspection and `--lock-wait <ms>` to tune account lock contention.
+If history sync returns no messages, run `zalo-agent sync --debug --per-thread 10 --timeout 30000 --delay 5000` to print per-group API errors. `msg history --json` also reports WebSocket page diagnostics in `historyFetch`.
 
 ### Commands
 

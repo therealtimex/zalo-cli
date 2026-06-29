@@ -2,9 +2,9 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 
-const tempHome = join(homedir(), ".zalo-agent-cli-test-temp-db");
+const tempHome = join(tmpdir(), "zalo-agent-cli-test-temp-db");
 process.env.ZALO_CONFIG_DIR = tempHome;
 
 // Dynamically import db.js and lock.js so process.env.ZALO_CONFIG_DIR is set beforehand
@@ -50,6 +50,22 @@ describe("Local SQLite Storage & Caching Layer", () => {
         assert.ok(tables.includes("groups"), "groups table should exist");
         assert.ok(tables.includes("group_participants"), "group_participants table should exist");
         assert.ok(tables.includes("messages"), "messages table should exist");
+        assert.ok(tables.includes("messages_fts"), "messages_fts virtual table should exist");
+        assert.ok(tables.includes("schema_migrations"), "schema_migrations table should exist");
+
+        const schemaVersion = db.pragma("user_version", { simple: true });
+        assert.equal(schemaVersion, 1, "schema user_version should track the current migration");
+
+        const migration = db.prepare("SELECT version, name FROM schema_migrations WHERE version = 1").get();
+        assert.deepEqual(migration, { version: 1, name: "initial_cache_schema" });
+
+        const accountDir = join(tempHome, "accounts", ownId);
+        const dbPath = join(accountDir, "zalo.db");
+        assert.equal(fs.statSync(accountDir).mode & 0o777, 0o700, "account directory should be owner-only");
+        assert.equal(fs.statSync(dbPath).mode & 0o777, 0o600, "database file should be owner-only");
+
+        assert.equal(db.pragma("journal_mode", { simple: true }), "wal", "database should use WAL mode");
+        assert.equal(db.pragma("synchronous", { simple: true }), 1, "database should use NORMAL synchronous mode");
 
         // Verify triggers exist
         const triggers = db
@@ -141,6 +157,16 @@ describe("Local SQLite Storage & Caching Layer", () => {
         assert.equal(msgs.length, 1);
         assert.equal(msgs[0].msgId, "m2");
         assert.equal(msgs[0].text, "Another message here");
+
+        const db = getDb();
+        const searchRows = db
+            .prepare("SELECT msg_id FROM messages_fts WHERE messages_fts MATCH ? ORDER BY rank")
+            .all("cache");
+        assert.deepEqual(
+            searchRows.map((row) => row.msg_id),
+            ["m1"],
+            "FTS index should include inserted message text",
+        );
     });
 
     it("prevents concurrent write locks on same account directory", async () => {

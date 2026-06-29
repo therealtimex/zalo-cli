@@ -4,7 +4,62 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
-import { getDb, upsertChat, upsertContact, upsertGroup, getLocalChats } from "../core/db.js";
+import { getDb, upsertChat, upsertContact, upsertGroup, getLocalChats, isReadonly } from "../core/db.js";
+import { normalizeTimestamp } from "../utils/time.js";
+
+function normalizeFriendProfiles(result) {
+    const profiles = result?.changed_profiles || result || {};
+    return Array.isArray(profiles) ? profiles : Object.values(profiles);
+}
+
+export function cacheConversationFriends(result) {
+    const db = getDb();
+    if (!db || isReadonly()) return;
+
+    for (const friend of normalizeFriendProfiles(result)) {
+        upsertContact({
+            userId: friend.userId,
+            phoneNumber: friend.phoneNumber || null,
+            displayName: friend.displayName || null,
+            zaloName: friend.zaloName || null,
+            avatarUrl: friend.avatar || null,
+            isFriend: 1,
+            lastActive: normalizeTimestamp(friend.lastActionTime),
+        });
+        if (friend.lastActionTime > 0) {
+            upsertChat({
+                threadId: friend.userId,
+                type: 0,
+                name: friend.displayName || friend.zaloName || "?",
+                lastMessageTs: normalizeTimestamp(friend.lastActionTime),
+            });
+        }
+    }
+}
+
+export function cacheConversationGroup(groupId, group) {
+    const db = getDb();
+    if (!db || isReadonly()) return;
+
+    upsertGroup({
+        groupId,
+        name: group.name,
+        ownerId: group.creatorId || null,
+        creatorId: group.creatorId || null,
+        createdTs: normalizeTimestamp(group.createdTime),
+        memberCount: group.totalMember || 0,
+    });
+}
+
+function getCachedConversations(opts, limit) {
+    const db = getDb();
+    if (!db) return [];
+    return getLocalChats({
+        friendsOnly: opts.friendsOnly,
+        groupsOnly: opts.groupsOnly,
+        limit,
+    });
+}
 
 export function registerConvCommands(program) {
     const conv = program.command("conv").description("Manage conversations");
@@ -25,31 +80,10 @@ export function registerConvCommands(program) {
                     // Fetch friends (sorted by lastActionTime = most recent interaction)
                     if (!opts.groupsOnly) {
                         const friends = await api.getAllFriends();
-                        const profiles = friends?.changed_profiles || friends || {};
-                        const list = Array.isArray(profiles) ? profiles : Object.values(profiles);
-                        if (db) {
-                            for (const f of list) {
-                                try {
-                                    upsertContact({
-                                        userId: f.userId,
-                                        phoneNumber: f.phoneNumber || null,
-                                        displayName: f.displayName || null,
-                                        zaloName: f.zaloName || null,
-                                        avatarUrl: f.avatar || null,
-                                        isFriend: 1,
-                                        lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null,
-                                    });
-                                    if (f.lastActionTime > 0) {
-                                        upsertChat({
-                                            threadId: f.userId,
-                                            type: 0,
-                                            name: f.displayName || f.zaloName || "?",
-                                            lastMessageTs: f.lastActionTime * 1000,
-                                        });
-                                    }
-                                } catch {}
-                            }
-                        }
+                        const list = normalizeFriendProfiles(friends);
+                        try {
+                            cacheConversationFriends(friends);
+                        } catch {}
                         const sorted = list
                             .filter((f) => f.lastActionTime > 0)
                             .sort((a, b) => b.lastActionTime - a.lastActionTime)
@@ -60,7 +94,9 @@ export function registerConvCommands(program) {
                                 name: f.displayName || f.zaloName || "?",
                                 type: "User",
                                 typeFlag: 0,
-                                lastActive: new Date(f.lastActionTime * 1000).toLocaleString(),
+                                lastActive: normalizeTimestamp(f.lastActionTime)
+                                    ? new Date(normalizeTimestamp(f.lastActionTime)).toLocaleString()
+                                    : "?",
                             });
                         }
                     }
@@ -80,18 +116,9 @@ export function registerConvCommands(program) {
                                     const groupInfo = await api.getGroupInfo(batch);
                                     const map = groupInfo?.gridInfoMap || {};
                                     for (const [gid, g] of Object.entries(map)) {
-                                        if (db) {
-                                            try {
-                                                upsertGroup({
-                                                    groupId: gid,
-                                                    name: g.name,
-                                                    ownerId: g.creatorId || null,
-                                                    creatorId: g.creatorId || null,
-                                                    createdTs: g.createdTime ? Number(g.createdTime) : null,
-                                                    memberCount: g.totalMember || 0,
-                                                });
-                                            } catch {}
-                                        }
+                                        try {
+                                            cacheConversationGroup(gid, g);
+                                        } catch {}
                                         conversations.push({
                                             threadId: gid,
                                             name: g.name || "?",
@@ -106,14 +133,17 @@ export function registerConvCommands(program) {
                             }
                         }
                     }
+
+                    if (db) {
+                        const cached = getCachedConversations(opts, limit);
+                        if (cached.length > 0) {
+                            conversations = cached;
+                        }
+                    }
                 } catch (apiErr) {
                     if (db) {
                         warning(`Offline fallback: Zalo API unreachable. Loading from local SQLite cache.`);
-                        conversations = getLocalChats({
-                            friendsOnly: opts.friendsOnly,
-                            groupsOnly: opts.groupsOnly,
-                            limit,
-                        });
+                        conversations = getCachedConversations(opts, limit);
                     } else {
                         throw apiErr;
                     }

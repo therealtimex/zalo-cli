@@ -6,6 +6,7 @@
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
+import { normalizeTimestamp } from "../utils/time.js";
 
 export function registerGroupCommands(program) {
     const group = program.command("group").description("Manage groups");
@@ -130,8 +131,8 @@ export function registerGroupCommands(program) {
                         groupId: d.idTo,
                         msgType: d.msgType,
                         content: typeof content === "string" ? content : content,
-                        timestamp: Number(d.ts),
-                        isoTime: new Date(Number(d.ts)).toISOString(),
+                        timestamp: normalizeTimestamp(d.ts),
+                        isoTime: normalizeTimestamp(d.ts) ? new Date(normalizeTimestamp(d.ts)).toISOString() : null,
                         isSelf: m.isSelf ?? false,
                         ...(d.mentions && { mentions: d.mentions }),
                         ...(d.quote && {

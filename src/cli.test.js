@@ -26,6 +26,8 @@ describe("CLI interface", () => {
 
     it("--help lists all command groups", () => {
         const out = run("--help");
+        assert.match(out, /--read-only/);
+        assert.match(out, /--lock-wait/);
         assert.match(out, /login/);
         assert.match(out, /msg/);
         assert.match(out, /friend/);
@@ -109,6 +111,7 @@ describe("CLI interface", () => {
         assert.match(out, /--delay/);
         assert.match(out, /--timeout/);
         assert.match(out, /--download-media/);
+        assert.match(out, /--debug/);
     });
 
     it("sync fails on clean state since not logged in", () => {

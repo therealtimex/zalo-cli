@@ -1,48 +1,104 @@
 import fs from "node:fs";
 import { join } from "node:path";
 
+const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_POLL_MS = 100;
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseLockInfo(content) {
+    const entries = {};
+    for (const line of content.split(/\r?\n/)) {
+        const [key, ...valueParts] = line.split("=");
+        if (!key || valueParts.length === 0) continue;
+        entries[key.trim()] = valueParts.join("=").trim();
+    }
+    const pid = Number.parseInt(entries.pid, 10);
+    return {
+        pid: Number.isSafeInteger(pid) && pid > 0 ? pid : null,
+        acquiredAt: entries.acquired_at || null,
+    };
+}
+
+function isProcessAlive(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (err) {
+        if (err.code === "ESRCH") return false;
+        if (err.code === "EPERM") return true;
+        return true;
+    }
+}
+
+function normalizeTimeout(timeoutMs) {
+    const parsed = Number.parseInt(timeoutMs, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_TIMEOUT_MS;
+    return parsed;
+}
+
 export class AccountLock {
-    constructor(accountDir) {
+    constructor(accountDir, options = {}) {
         this.lockPath = join(accountDir, "LOCK");
         this.lockFileHandle = null;
+        this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
     }
 
-    async acquire(timeoutMs = 5000) {
+    async acquire(timeoutMs = DEFAULT_TIMEOUT_MS) {
+        const waitMs = normalizeTimeout(timeoutMs);
         const start = Date.now();
-        while (Date.now() - start < timeoutMs) {
+
+        while (true) {
             try {
-                // 'wx' flag opens for writing and fails if file already exists
-                this.lockFileHandle = fs.openSync(this.lockPath, "wx");
-                // Write PID to lock file
-                fs.writeSync(this.lockFileHandle, `pid=${process.pid}\nacquired_at=${new Date().toISOString()}`);
+                // 'wx' opens for writing and fails if another process already created the lock.
+                this.lockFileHandle = fs.openSync(this.lockPath, "wx", 0o600);
+                try {
+                    fs.chmodSync(this.lockPath, 0o600);
+                } catch {}
+                try {
+                    fs.writeSync(this.lockFileHandle, `pid=${process.pid}\nacquired_at=${new Date().toISOString()}`);
+                } catch (writeErr) {
+                    this.release();
+                    throw writeErr;
+                }
                 return true;
             } catch (err) {
                 if (err.code !== "EEXIST") throw err;
-                // Check if process in lockfile is still alive
-                try {
-                    const content = fs.readFileSync(this.lockPath, "utf-8");
-                    const pidMatch = content.match(/pid=(\d+)/);
-                    if (pidMatch) {
-                        const pid = parseInt(pidMatch[1], 10);
-                        // Send 0 signal to check if process exists
-                        process.kill(pid, 0);
-                    }
-                } catch (killErr) {
-                    // process.kill throws ESRCH if pid doesn't exist; lock is stale
-                    if (killErr.code === "ESRCH" || killErr.code === "EPERM") {
-                        if (killErr.code === "ESRCH") {
-                            try {
-                                fs.unlinkSync(this.lockPath);
-                            } catch {}
-                            continue;
-                        }
-                    }
+                if (this._removeStaleLock()) {
+                    continue;
                 }
-                // Wait and retry
-                await new Promise((r) => setTimeout(r, 200));
+
+                const elapsed = Date.now() - start;
+                const remaining = waitMs - elapsed;
+                if (remaining <= 0) break;
+
+                await sleep(Math.min(this.pollMs, remaining));
             }
         }
-        throw new Error("Could not acquire account lock. Is another zalo-agent process running?");
+        throw new Error(
+            `Could not acquire account lock within ${waitMs}ms. Is another zalo-agent process running? (${this.lockPath})`,
+        );
+    }
+
+    _removeStaleLock() {
+        let content = "";
+        try {
+            content = fs.readFileSync(this.lockPath, "utf-8");
+        } catch {
+            return false;
+        }
+
+        const { pid } = parseLockInfo(content);
+        if (!pid || pid === process.pid || isProcessAlive(pid)) return false;
+
+        try {
+            fs.unlinkSync(this.lockPath);
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     release() {

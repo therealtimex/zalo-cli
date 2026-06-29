@@ -4,12 +4,43 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
-import { getDb, upsertContact, getLocalFriends } from "../core/db.js";
+import { getDb, upsertContact, getLocalFriends, isReadonly } from "../core/db.js";
+import { normalizeTimestamp } from "../utils/time.js";
 
 /** Extract numeric error code from zca-js error message string. */
 function extractErrorCode(msg) {
     const match = String(msg).match(/\((\-?\d+)\)/);
     return match ? Number(match[1]) : null;
+}
+
+export function normalizeFriendProfiles(result) {
+    const profiles = result?.changed_profiles || result || {};
+    return Array.isArray(profiles) ? profiles : Object.values(profiles);
+}
+
+export function cacheFriendProfiles(result) {
+    const db = getDb();
+    if (!db || isReadonly()) return;
+
+    for (const friend of normalizeFriendProfiles(result)) {
+        upsertContact({
+            userId: friend.userId,
+            phoneNumber: friend.phoneNumber || null,
+            displayName: friend.displayName || null,
+            zaloName: friend.zaloName || null,
+            avatarUrl: friend.avatar || null,
+            isFriend: 1,
+            lastActive: normalizeTimestamp(friend.lastActionTime),
+        });
+    }
+}
+
+function getFriendListFromCacheOrResult(result) {
+    const db = getDb();
+    if (!db) return result;
+
+    const cached = getLocalFriends();
+    return cached.length > 0 ? cached : result;
 }
 
 export function registerFriendCommands(program) {
@@ -25,22 +56,11 @@ export function registerFriendCommands(program) {
                 let result;
                 try {
                     result = await api.getAllFriends();
+                    try {
+                        cacheFriendProfiles(result);
+                    } catch {}
                     if (db) {
-                        const profiles = result?.changed_profiles || result || {};
-                        const friends = Array.isArray(profiles) ? profiles : Object.values(profiles);
-                        for (const f of friends) {
-                            try {
-                                upsertContact({
-                                    userId: f.userId,
-                                    phoneNumber: f.phoneNumber || null,
-                                    displayName: f.displayName || null,
-                                    zaloName: f.zaloName || null,
-                                    avatarUrl: f.avatar || null,
-                                    isFriend: 1,
-                                    lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null,
-                                });
-                            } catch {}
-                        }
+                        result = getFriendListFromCacheOrResult(result);
                     }
                 } catch (apiErr) {
                     if (db) {
@@ -86,22 +106,11 @@ export function registerFriendCommands(program) {
                 let result;
                 try {
                     result = await api.getAllFriends();
+                    try {
+                        cacheFriendProfiles(result);
+                    } catch {}
                     if (db) {
-                        const profiles = result?.changed_profiles || result || {};
-                        const friends = Array.isArray(profiles) ? profiles : Object.values(profiles);
-                        for (const f of friends) {
-                            try {
-                                upsertContact({
-                                    userId: f.userId,
-                                    phoneNumber: f.phoneNumber || null,
-                                    displayName: f.displayName || null,
-                                    zaloName: f.zaloName || null,
-                                    avatarUrl: f.avatar || null,
-                                    isFriend: 1,
-                                    lastActive: f.lastActionTime ? f.lastActionTime * 1000 : null,
-                                });
-                            } catch {}
-                        }
+                        result = getFriendListFromCacheOrResult(result);
                     }
                 } catch (apiErr) {
                     if (db) {
@@ -112,8 +121,7 @@ export function registerFriendCommands(program) {
                     }
                 }
 
-                const profilesList = result?.changed_profiles || result || {};
-                const friends = Array.isArray(profilesList) ? profilesList : Object.values(profilesList);
+                const friends = normalizeFriendProfiles(result);
                 const query = name.toLowerCase();
                 const matches = friends.filter((f) => {
                     const dn = (f.displayName || "").toLowerCase();

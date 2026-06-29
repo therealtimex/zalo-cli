@@ -12,10 +12,12 @@ import {
     getLocalMessages,
     getLocalMessagesCount,
     getOldestMessageId,
+    isReadonly,
     upsertMessage,
     updateMessageLocalPath,
 } from "../core/db.js";
 import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
+import { normalizeTimestamp, timestampOrNow } from "../utils/time.js";
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -503,6 +505,7 @@ export function registerMsgCommands(program) {
             const threadType = Number(opts.type);
             const limit = Number(opts.limit);
             const timeout = Number(opts.timeout);
+            let historyApi = null;
 
             try {
                 if (!jsonMode && limit > 100) {
@@ -542,6 +545,7 @@ export function registerMsgCommands(program) {
                 }
 
                 const api = getApi();
+                historyApi = api;
                 let lastMsgId = null;
 
                 if (db) {
@@ -550,6 +554,9 @@ export function registerMsgCommands(program) {
 
                 let done = false;
                 const fetchedMessages = [];
+                let pagesReceived = 0;
+                let rawMessagesReceived = 0;
+                let historyWarning = null;
 
                 // Start listener (required for WebSocket requestOldMessages)
                 await new Promise((resolve, reject) => {
@@ -586,9 +593,13 @@ export function registerMsgCommands(program) {
                     });
 
                     if (!pageMessages || pageMessages.length === 0) {
+                        historyWarning = "WebSocket old_messages returned no messages for this request.";
                         done = true;
                         break;
                     }
+
+                    pagesReceived++;
+                    rawMessagesReceived += pageMessages.length;
 
                     for (const msg of pageMessages) {
                         // API returns messages globally — filter to requested thread
@@ -606,19 +617,19 @@ export function registerMsgCommands(program) {
                                 typeof msg.data?.content === "string"
                                     ? msg.data.content
                                     : extractMessageText(msg.data?.content, msg.data?.msgType),
-                            timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
+                            timestamp: normalizeTimestamp(msg.data?.ts),
                             type: typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment",
                         };
 
                         fetchedMessages.push(parsedMsg);
 
-                        if (db) {
+                        if (db && !isReadonly()) {
                             upsertMessage({
                                 msgId: msg.data?.msgId,
                                 threadId: msg.threadId,
                                 senderId: msg.data?.uidFrom || null,
                                 senderName: msg.data?.dName || null,
-                                ts: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
+                                ts: timestampOrNow(msg.data?.ts),
                                 fromMe: msg.isSelf ? 1 : 0,
                                 text: parsedMsg.text,
                                 msgType: parsedMsg.type,
@@ -637,14 +648,20 @@ export function registerMsgCommands(program) {
                     lastMsgId = nextId;
                 }
 
-                if (db) {
+                if (db && !isReadonly()) {
                     allMessages = getLocalMessages(threadId, limit);
+                } else if (db) {
+                    const localMessages = getLocalMessages(threadId, limit);
+                    allMessages = [...localMessages, ...fetchedMessages].slice(0, limit);
                 } else {
                     allMessages = fetchedMessages.slice(0, limit);
                 }
 
                 // Sort by timestamp (oldest first)
                 allMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+                if (allMessages.length === 0 && rawMessagesReceived > 0) {
+                    historyWarning = `WebSocket returned ${rawMessagesReceived} old message(s), but none matched thread ${threadId}.`;
+                }
 
                 output(
                     {
@@ -652,10 +669,17 @@ export function registerMsgCommands(program) {
                         threadType: threadType === 0 ? "dm" : "group",
                         count: allMessages.length,
                         messages: allMessages,
+                        historyFetch: {
+                            pagesReceived,
+                            rawMessagesReceived,
+                            matchedMessages: fetchedMessages.length,
+                            ...(historyWarning && { warning: historyWarning }),
+                        },
                     },
                     jsonMode,
                     () => {
                         success(`${allMessages.length} message(s) from ${threadId}`);
+                        if (historyWarning) info(historyWarning);
                         for (const m of allMessages) {
                             const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                             const name = m.senderName || m.senderId || "?";
@@ -669,8 +693,37 @@ export function registerMsgCommands(program) {
                 process.exit(0);
             } catch (e) {
                 try {
-                    api.listener.stop();
+                    historyApi?.listener?.stop();
                 } catch {}
+                const db = getDb();
+                if (db) {
+                    const cachedMessages = getLocalMessages(threadId, limit);
+                    if (cachedMessages.length > 0) {
+                        cachedMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+                        output(
+                            {
+                                threadId,
+                                threadType: threadType === 0 ? "dm" : "group",
+                                count: cachedMessages.length,
+                                messages: cachedMessages,
+                                warning: `Loaded from local cache after history fetch failed: ${e.message}`,
+                            },
+                            jsonMode,
+                            () => {
+                                info(`History fetch failed: ${e.message}`);
+                                success(
+                                    `${cachedMessages.length} message(s) from ${threadId} (loaded from local cache)`,
+                                );
+                                for (const m of cachedMessages) {
+                                    const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                                    const name = m.senderName || m.senderId || "?";
+                                    console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
+                                }
+                            },
+                        );
+                        process.exit(0);
+                    }
+                }
                 error(`History fetch failed: ${e.message}`);
                 process.exit(1);
             }
