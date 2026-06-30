@@ -127,7 +127,15 @@ function getSentMessageId(result) {
 
 function buildFallbackMessageId({ ownId, threadId, threadType, text, cliMsgId }) {
     const hash = createHash("sha256")
-        .update(JSON.stringify({ ownId: ownId || null, threadId, threadType, text, cliMsgId }))
+        .update(
+            JSON.stringify({
+                ownId: ownId ?? null,
+                threadId: threadId ?? null,
+                threadType: threadType ?? null,
+                text: text ?? null,
+                cliMsgId: cliMsgId ?? null,
+            }),
+        )
         .digest("hex")
         .slice(0, 24);
     return `client:${hash}`;

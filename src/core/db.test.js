@@ -207,6 +207,41 @@ describe("Local SQLite Storage & Caching Layer", () => {
         assert.equal(content.result.cliMsgId, "client_2");
     });
 
+    it("uses the same outgoing fallback id for undefined and null optional hash fields", async () => {
+        const ownId = "test_user_outgoing_fallback_null_id";
+        await initDatabase(ownId);
+
+        const undefinedMsgId = persistOutgoingTextMessage({
+            threadId: "thread_3",
+            threadType: undefined,
+            text: undefined,
+            payload: undefined,
+            result: {},
+            ownId: null,
+            sentAt: 4234567890,
+        });
+
+        const nullMsgId = persistOutgoingTextMessage({
+            threadId: "thread_3",
+            threadType: null,
+            text: null,
+            payload: null,
+            result: { cliMsgId: null },
+            ownId: null,
+            sentAt: 5234567890,
+        });
+
+        assert.equal(nullMsgId, undefinedMsgId);
+        assert.match(undefinedMsgId, /^client:[a-f0-9]{24}$/);
+        assert.equal(getLocalMessagesCount("thread_3"), 1);
+
+        const row = getDb().prepare("SELECT * FROM messages WHERE msg_id = ?").get(undefinedMsgId);
+        assert.equal(row.thread_id, "thread_3");
+        assert.equal(row.from_me, 1);
+        assert.equal(row.sender_id, null);
+        assert.equal(row.ts, 5234567890);
+    });
+
     it("prevents concurrent write locks on same account directory", async () => {
         const accountDir = join(tempHome, "accounts", "test_concurrency");
         fs.mkdirSync(accountDir, { recursive: true, mode: 0o700 });
