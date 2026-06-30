@@ -2,9 +2,9 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 
-const tempHome = join(homedir(), ".zalo-agent-cli-test-temp-db");
+const tempHome = join(tmpdir(), "zalo-agent-cli-test-temp-db");
 process.env.ZALO_CONFIG_DIR = tempHome;
 
 // Dynamically import db.js and lock.js so process.env.ZALO_CONFIG_DIR is set beforehand
@@ -22,6 +22,7 @@ const {
 } = await import("./db.js");
 
 const { AccountLock } = await import("./lock.js");
+const { persistOutgoingTextMessage } = await import("../commands/msg.js");
 
 describe("Local SQLite Storage & Caching Layer", () => {
     beforeEach(() => {
@@ -141,6 +142,104 @@ describe("Local SQLite Storage & Caching Layer", () => {
         assert.equal(msgs.length, 1);
         assert.equal(msgs[0].msgId, "m2");
         assert.equal(msgs[0].text, "Another message here");
+    });
+
+    it("persists successful outgoing text sends with returned Zalo message id", async () => {
+        const ownId = "test_user_outgoing_returned_id";
+        await initDatabase(ownId);
+
+        const msgId = persistOutgoingTextMessage({
+            threadId: "thread_1",
+            threadType: 0,
+            text: "Hello from CLI",
+            payload: "Hello from CLI",
+            result: { message: { msgId: "zalo_msg_1" }, cliMsgId: "client_1" },
+            ownId,
+            sentAt: 1234567890,
+        });
+
+        assert.equal(msgId, "zalo_msg_1");
+
+        const row = getDb().prepare("SELECT * FROM messages WHERE msg_id = ?").get("zalo_msg_1");
+        assert.equal(row.thread_id, "thread_1");
+        assert.equal(row.from_me, 1);
+        assert.equal(row.text, "Hello from CLI");
+        assert.equal(row.msg_type, "text");
+        assert.equal(row.sender_id, ownId);
+
+        const content = JSON.parse(row.content_json);
+        assert.equal(content.direction, "outgoing");
+        assert.equal(content.payload, "Hello from CLI");
+        assert.equal(content.result.message.msgId, "zalo_msg_1");
+    });
+
+    it("persists outgoing text sends with a stable client fallback id", async () => {
+        const ownId = "test_user_outgoing_fallback_id";
+        await initDatabase(ownId);
+
+        const sendMetadata = {
+            threadId: "thread_2",
+            threadType: 1,
+            text: "Styled CLI text",
+            payload: { msg: "Styled CLI text", styles: [{ start: 0, len: 6, st: "b" }] },
+            result: { cliMsgId: "client_2", status: "ok" },
+            ownId,
+            sentAt: 2234567890,
+        };
+
+        const msgId = persistOutgoingTextMessage(sendMetadata);
+        const duplicateMsgId = persistOutgoingTextMessage({ ...sendMetadata, sentAt: 3234567890 });
+
+        assert.equal(duplicateMsgId, msgId);
+        assert.match(msgId, /^client:[a-f0-9]{24}$/);
+        assert.equal(getLocalMessagesCount("thread_2"), 1);
+
+        const row = getDb().prepare("SELECT * FROM messages WHERE msg_id = ?").get(msgId);
+        assert.equal(row.thread_id, "thread_2");
+        assert.equal(row.from_me, 1);
+        assert.equal(row.text, "Styled CLI text");
+        assert.equal(row.msg_type, "text");
+        assert.equal(row.sender_id, ownId);
+        assert.equal(row.ts, 3234567890);
+
+        const content = JSON.parse(row.content_json);
+        assert.deepEqual(content.payload, sendMetadata.payload);
+        assert.equal(content.result.cliMsgId, "client_2");
+    });
+
+    it("uses the same outgoing fallback id for undefined and null optional hash fields", async () => {
+        const ownId = "test_user_outgoing_fallback_null_id";
+        await initDatabase(ownId);
+
+        const undefinedMsgId = persistOutgoingTextMessage({
+            threadId: "thread_3",
+            threadType: undefined,
+            text: undefined,
+            payload: undefined,
+            result: {},
+            ownId: null,
+            sentAt: 4234567890,
+        });
+
+        const nullMsgId = persistOutgoingTextMessage({
+            threadId: "thread_3",
+            threadType: null,
+            text: null,
+            payload: null,
+            result: { cliMsgId: null },
+            ownId: null,
+            sentAt: 5234567890,
+        });
+
+        assert.equal(nullMsgId, undefinedMsgId);
+        assert.match(undefinedMsgId, /^client:[a-f0-9]{24}$/);
+        assert.equal(getLocalMessagesCount("thread_3"), 1);
+
+        const row = getDb().prepare("SELECT * FROM messages WHERE msg_id = ?").get(undefinedMsgId);
+        assert.equal(row.thread_id, "thread_3");
+        assert.equal(row.from_me, 1);
+        assert.equal(row.sender_id, null);
+        assert.equal(row.ts, 5234567890);
     });
 
     it("prevents concurrent write locks on same account directory", async () => {
