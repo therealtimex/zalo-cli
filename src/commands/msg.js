@@ -3,9 +3,10 @@
  * stickers, reactions, delete, forward.
  */
 
+import { createHash } from "node:crypto";
 import { resolve } from "path";
 import { getApi, getOwnId } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import {
     getDb,
@@ -98,6 +99,78 @@ function parseStyleSpecs(specs) {
         .filter(Boolean);
 }
 
+function firstStringValue(...values) {
+    for (const value of values) {
+        if (value !== undefined && value !== null && value !== "") {
+            return String(value);
+        }
+    }
+    return null;
+}
+
+function getSentMessageId(result) {
+    return firstStringValue(
+        result?.message?.msgId,
+        result?.message?.msg_id,
+        result?.message?.messageId,
+        result?.message?.message_id,
+        result?.msgId,
+        result?.msg_id,
+        result?.messageId,
+        result?.message_id,
+        result?.data?.msgId,
+        result?.data?.msg_id,
+        result?.data?.messageId,
+        result?.data?.message_id,
+    );
+}
+
+function buildFallbackMessageId({ ownId, threadId, threadType, text, cliMsgId }) {
+    const hash = createHash("sha256")
+        .update(JSON.stringify({ ownId: ownId || null, threadId, threadType, text, cliMsgId }))
+        .digest("hex")
+        .slice(0, 24);
+    return `client:${hash}`;
+}
+
+export function persistOutgoingTextMessage({
+    threadId,
+    threadType,
+    text,
+    payload,
+    result,
+    ownId = getOwnId(),
+    sentAt = Date.now(),
+}) {
+    const msgId =
+        getSentMessageId(result) ||
+        buildFallbackMessageId({
+            ownId,
+            threadId,
+            threadType,
+            text,
+            cliMsgId: result?.cliMsgId,
+        });
+
+    upsertMessage({
+        msgId,
+        threadId,
+        type: threadType,
+        senderId: ownId || null,
+        ts: sentAt,
+        fromMe: 1,
+        text,
+        msgType: "text",
+        contentJson: JSON.stringify({
+            direction: "outgoing",
+            payload,
+            result,
+        }),
+    });
+
+    return msgId;
+}
+
 export function registerMsgCommands(program) {
     const msg = program.command("msg").description("Send and manage messages");
 
@@ -147,6 +220,17 @@ export function registerMsgCommands(program) {
                 const cliMsgId = String(Date.now());
                 const result = await getApi().sendMessage(msgContent, threadId, Number(opts.type));
                 result.cliMsgId = cliMsgId;
+                try {
+                    persistOutgoingTextMessage({
+                        threadId,
+                        threadType: Number(opts.type),
+                        text: finalMsg,
+                        payload: msgContent,
+                        result,
+                    });
+                } catch (dbError) {
+                    warning(`Message sent, but local cache save failed: ${dbError.message}`);
+                }
                 output(result, program.opts().json, () => success("Message sent"));
 
                 // Auto-react if --react flag provided
