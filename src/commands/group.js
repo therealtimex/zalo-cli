@@ -165,6 +165,7 @@ export function registerGroupCommands(program) {
                 });
             } catch (e) {
                 error(`Get history failed: ${e.message}`);
+                process.exit(1);
             }
         });
 

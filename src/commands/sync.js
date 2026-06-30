@@ -16,6 +16,34 @@ import {
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
 
+const GROUP_HISTORY_404_SKIP_THRESHOLD = 3;
+
+export function isHttp404Error(err) {
+    const status = err?.status || err?.statusCode || err?.response?.status;
+    return status === 404 || /\b404\b/.test(String(err?.message || ""));
+}
+
+export function summarizeGroupHistoryBackfill({
+    groupCount,
+    httpAttempts,
+    httpErrors,
+    httpMessages,
+    wsMessages,
+    skippedAfter404,
+}) {
+    const allHttpAttemptsFailed = httpAttempts > 0 && httpErrors === httpAttempts && httpMessages === 0;
+    const hasFallbackMessages = wsMessages > 0;
+    const failed = groupCount > 0 && allHttpAttemptsFailed && !hasFallbackMessages;
+    const partial =
+        !failed && (httpErrors > 0 || skippedAfter404 > 0 || (allHttpAttemptsFailed && hasFallbackMessages));
+
+    return {
+        synced: !failed,
+        partial,
+        history_backfill_reliable: !failed && !partial,
+    };
+}
+
 export function registerSyncCommand(program) {
     program
         .command("sync")
@@ -124,26 +152,42 @@ export function registerSyncCommand(program) {
                 const delay = opts.delay;
                 const timeout = opts.timeout;
                 const ownId = getOwnId();
+                const groupIdSet = new Set(groupIds.map(String));
 
                 // 1. Sync Group history via HTTP per group (includes both sent and received messages).
                 //    Must run before the WS DM session to avoid session strain from the listener.
                 if (!jsonMode) info(`Fetching group message history (${groupIds.length} groups, ${delay}ms delay)...`);
                 let dmCount = 0;
                 let groupMsgsCount = 0;
+                let wsGroupMsgsCount = 0;
                 let groupsWithMsgs = 0;
                 let groupsEmpty = 0;
                 let groupsErrored = 0;
+                let groupHttpAttempts = 0;
+                let consecutiveGroup404s = 0;
+                let skippedAfter404 = 0;
 
                 for (let gi = 0; gi < groupIds.length; gi++) {
                     const gid = groupIds[gi];
+                    if (consecutiveGroup404s >= GROUP_HISTORY_404_SKIP_THRESHOLD) {
+                        skippedAfter404 = groupIds.length - gi;
+                        if (!jsonMode) {
+                            info(
+                                `  Skipping remaining ${skippedAfter404} group HTTP history request(s) after ${consecutiveGroup404s} consecutive 404 errors`,
+                            );
+                        }
+                        break;
+                    }
                     if (!jsonMode && gi % 20 === 0 && gi > 0) {
                         info(
                             `  Group history progress: ${gi}/${groupIds.length} (${groupsWithMsgs} with messages, ${groupsErrored} errors)`,
                         );
                     }
                     try {
+                        groupHttpAttempts++;
                         const history = await api.getGroupChatHistory(gid, perThread);
                         const msgs = history?.groupMsgs || [];
+                        consecutiveGroup404s = 0;
                         if (msgs.length === 0) {
                             groupsEmpty++;
                         } else {
@@ -174,8 +218,9 @@ export function registerSyncCommand(program) {
                                 groupMsgsCount++;
                             } catch {}
                         }
-                    } catch {
+                    } catch (e) {
                         groupsErrored++;
+                        consecutiveGroup404s = isHttp404Error(e) ? consecutiveGroup404s + 1 : 0;
                     }
                     await new Promise((r) => setTimeout(r, delay));
                 }
@@ -245,7 +290,11 @@ export function registerSyncCommand(program) {
                                     contentJson: JSON.stringify(msg.data),
                                     recalled: msg.data?.recalled ?? 0,
                                 });
-                                dmCount++;
+                                if (groupIdSet.has(String(msg.threadId))) {
+                                    wsGroupMsgsCount++;
+                                } else {
+                                    dmCount++;
+                                }
                             } catch {}
                         }
 
@@ -299,28 +348,56 @@ export function registerSyncCommand(program) {
                     }
                 }
 
+                const groupHistorySummary = summarizeGroupHistoryBackfill({
+                    groupCount: groupIds.length,
+                    httpAttempts: groupHttpAttempts,
+                    httpErrors: groupsErrored,
+                    httpMessages: groupMsgsCount,
+                    wsMessages: wsGroupMsgsCount,
+                    skippedAfter404,
+                });
+                const totalMessagesSynced = dmCount + groupMsgsCount + wsGroupMsgsCount;
+
                 output(
                     {
-                        synced: true,
+                        synced: groupHistorySummary.synced,
+                        ...(groupHistorySummary.partial && { partial: true }),
                         contacts_synced: contactsCount,
                         groups_synced: groupsCount,
-                        messages_synced: dmCount + groupMsgsCount,
-                        group_history: { with_messages: groupsWithMsgs, empty: groupsEmpty, errors: groupsErrored },
+                        messages_synced: totalMessagesSynced,
+                        history_backfill_reliable: groupHistorySummary.history_backfill_reliable,
+                        group_history: {
+                            with_messages: groupsWithMsgs,
+                            empty: groupsEmpty,
+                            errors: groupsErrored,
+                            http_errors: groupsErrored,
+                            http_messages: groupMsgsCount,
+                            ws_messages: wsGroupMsgsCount,
+                            ...(skippedAfter404 > 0 && { skipped_after_404: skippedAfter404 }),
+                        },
                         ...(opts.downloadMedia && { media_downloaded: mediaDownloaded }),
                     },
                     jsonMode,
                     () => {
-                        success("Sync complete!");
+                        if (groupHistorySummary.synced && !groupHistorySummary.partial) {
+                            success("Sync complete!");
+                        } else if (groupHistorySummary.partial) {
+                            info("Sync partially complete: group HTTP history backfill was incomplete.");
+                        } else {
+                            error(
+                                "Sync failed: group HTTP history failed and no WebSocket fallback messages were synced.",
+                            );
+                        }
                         info(`Contacts synced: ${contactsCount}`);
                         info(`Group chats synced: ${groupsCount}`);
-                        info(`Messages synced: ${dmCount + groupMsgsCount}`);
+                        info(`Messages synced: ${totalMessagesSynced}`);
                         if (opts.downloadMedia) {
                             info(`Media files downloaded: ${mediaDownloaded}`);
                         }
                     },
                 );
 
-                process.exit(0);
+                process.exit(groupHistorySummary.synced ? 0 : 1);
             } catch (e) {
                 try {
                     api.listener.stop();
