@@ -744,7 +744,9 @@ export function registerMsgCommands(program) {
                     jsonMode,
                     () => {
                         success(`Seeded status broadcast fixture ${fixture.msgId}`);
-                        info(`Validate with: zalo-agent --json msg search ${JSON.stringify(fixture.text)} --status --limit 3`);
+                        info(
+                            `Validate with: zalo-agent --json msg search ${JSON.stringify(fixture.text)} --status --limit 3`,
+                        );
                     },
                 );
                 process.exit(0);
