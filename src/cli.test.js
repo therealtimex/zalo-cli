@@ -46,8 +46,20 @@ describe("CLI interface", () => {
         assert.match(out, /react/);
         assert.match(out, /delete/);
         assert.match(out, /forward/);
+        assert.match(out, /search/);
         assert.match(out, /download/);
         assert.match(out, /media-sync/);
+    });
+
+    it("msg search --help lists offline search filters", () => {
+        const out = run("msg", "search", "--help");
+        assert.match(out, /--chat/);
+        assert.match(out, /--sender/);
+        assert.match(out, /--direction/);
+        assert.match(out, /--since/);
+        assert.match(out, /--until/);
+        assert.match(out, /--type/);
+        assert.match(out, /--status/);
     });
 
     it("listen --help lists option --download-media", () => {

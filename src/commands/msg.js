@@ -12,7 +12,9 @@ import {
     getDb,
     getLocalMessages,
     getLocalMessagesCount,
+    getLocalStatusBroadcasts,
     getOldestMessageId,
+    searchLocalMessages,
     upsertMessage,
     updateMessageLocalPath,
 } from "../core/db.js";
@@ -139,6 +141,14 @@ function buildFallbackMessageId({ ownId, threadId, threadType, text, cliMsgId })
         .digest("hex")
         .slice(0, 24);
     return `client:${hash}`;
+}
+
+function parseFromMe(value) {
+    if (value === undefined) return undefined;
+    const normalized = String(value).toLowerCase();
+    if (["1", "true", "yes", "outgoing", "from_me"].includes(normalized)) return true;
+    if (["0", "false", "no", "incoming"].includes(normalized)) return false;
+    throw new Error("--from-me must be true/false, 1/0, incoming, or outgoing");
 }
 
 export function persistOutgoingTextMessage({
@@ -582,6 +592,85 @@ export function registerMsgCommands(program) {
                 output(result, program.opts().json, () => success("Message forwarded"));
             } catch (e) {
                 error(e.message);
+            }
+        });
+
+    msg.command("search [query]")
+        .description("Search cached local messages offline")
+        .option("-c, --chat <threadId>", "Filter by chat/thread ID")
+        .option("-s, --sender <sender>", "Filter by sender ID or sender display name")
+        .option("--sender-id <senderId>", "Filter by exact sender ID")
+        .option("--sender-name <name>", "Filter by exact sender display name")
+        .option("-d, --direction <direction>", "Filter by direction: incoming, outgoing, or from_me")
+        .option("--from-me <value>", "Filter by from_me flag: true/false or 1/0")
+        .option("--since <time>", "Filter messages at or after a millisecond timestamp or parseable date")
+        .option("--until <time>", "Filter messages at or before a millisecond timestamp or parseable date")
+        .option("--type <type>", "Filter by message/media type, for example text, image, file, voice")
+        .option("--media", "Only include non-text media messages")
+        .option("--status", "Search status broadcasts instead of regular chat messages")
+        .option("-n, --limit <n>", "Maximum results to return", "20")
+        .action(async (query = "", opts) => {
+            const jsonMode = program.opts().json;
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+
+                const filters = {
+                    query,
+                    threadId: opts.chat,
+                    sender: opts.sender,
+                    senderId: opts.senderId,
+                    senderName: opts.senderName,
+                    direction: opts.direction,
+                    fromMe: parseFromMe(opts.fromMe),
+                    since: opts.since,
+                    until: opts.until,
+                    msgType: opts.type,
+                    media: opts.media,
+                    limit: Number(opts.limit),
+                };
+
+                if (opts.status) {
+                    const statuses = getLocalStatusBroadcasts(filters);
+                    output({ mode: "like", status: true, count: statuses.length, messages: statuses }, jsonMode, () => {
+                        success(`${statuses.length} status broadcast(s) found`);
+                        for (const m of statuses) {
+                            const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                            const name = m.senderName || m.senderId || "?";
+                            console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
+                        }
+                    });
+                    process.exit(0);
+                }
+
+                const result = searchLocalMessages(filters);
+                output(
+                    {
+                        mode: result.mode,
+                        fallback: result.fallback,
+                        ftsError: result.ftsError,
+                        count: result.messages.length,
+                        messages: result.messages,
+                    },
+                    jsonMode,
+                    () => {
+                        const suffix = result.fallback ? " (LIKE fallback)" : "";
+                        success(`${result.messages.length} message(s) found via ${result.mode}${suffix}`);
+                        for (const m of result.messages) {
+                            const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                            const name = m.senderName || m.senderId || "?";
+                            const dir = m.fromMe ? "→" : "←";
+                            console.log(`  ${dir} [${date}] [${m.threadId}] ${name}: ${(m.text || "").slice(0, 200)}`);
+                        }
+                    },
+                );
+                process.exit(0);
+            } catch (e) {
+                error(`Search failed: ${e.message}`);
+                process.exit(1);
             }
         });
 
