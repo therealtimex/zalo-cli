@@ -16,6 +16,7 @@ import {
     getOldestMessageId,
     searchLocalMessages,
     upsertMessage,
+    upsertStatusBroadcast,
     updateMessageLocalPath,
 } from "../core/db.js";
 import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
@@ -149,6 +150,27 @@ function parseFromMe(value) {
     if (["1", "true", "yes", "outgoing", "from_me"].includes(normalized)) return true;
     if (["0", "false", "no", "incoming"].includes(normalized)) return false;
     throw new Error("--from-me must be true/false, 1/0, incoming, or outgoing");
+}
+
+function buildStatusBroadcastFixture({ msgId, senderId, senderName, text, msgType, timestamp, fromMe }) {
+    const ts = timestamp === undefined ? Date.now() : Number(timestamp);
+    if (!Number.isFinite(ts)) throw new Error("--timestamp must be a millisecond timestamp");
+
+    return {
+        msgId,
+        threadId: "status@broadcast",
+        senderId,
+        senderName,
+        ts,
+        fromMe: fromMe ? 1 : 0,
+        text,
+        msgType,
+        contentJson: JSON.stringify({
+            qaFixture: true,
+            source: "zalo-agent msg seed-status-broadcast",
+            seededAt: new Date(ts).toISOString(),
+        }),
+    };
 }
 
 export function persistOutgoingTextMessage({
@@ -670,6 +692,64 @@ export function registerMsgCommands(program) {
                 process.exit(0);
             } catch (e) {
                 error(`Search failed: ${e.message}`);
+                process.exit(1);
+            }
+        });
+
+    msg.command("seed-status-broadcast")
+        .description("Seed a local status broadcast fixture for installed CLI QA")
+        .option("--id <msgId>", "Fixture message id", "qa-status-broadcast-fixture")
+        .option("--sender-id <senderId>", "Fixture sender id", "qa-status-sender")
+        .option("--sender-name <name>", "Fixture sender display name", "QA Status Fixture")
+        .option("--text <text>", "Fixture text", "qa-status-broadcast-positive-fixture")
+        .option("--type <type>", "Fixture message/media type", "image")
+        .option("--timestamp <ms>", "Fixture timestamp in milliseconds")
+        .option("--from-me", "Mark fixture as outgoing/from_me")
+        .action(async (opts) => {
+            const jsonMode = program.opts().json;
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+
+                const fixture = buildStatusBroadcastFixture({
+                    msgId: opts.id,
+                    senderId: opts.senderId,
+                    senderName: opts.senderName,
+                    text: opts.text,
+                    msgType: opts.type,
+                    timestamp: opts.timestamp,
+                    fromMe: opts.fromMe,
+                });
+                upsertStatusBroadcast(fixture);
+
+                const matches = getLocalStatusBroadcasts({ query: fixture.text, limit: 1 });
+                output(
+                    {
+                        status: true,
+                        seeded: true,
+                        msgId: fixture.msgId,
+                        threadId: fixture.threadId,
+                        senderId: fixture.senderId,
+                        senderName: fixture.senderName,
+                        text: fixture.text,
+                        timestamp: fixture.ts,
+                        type: fixture.msgType,
+                        searchCommand: `zalo-agent --json msg search ${JSON.stringify(fixture.text)} --status --limit 3`,
+                        count: matches.length,
+                        messages: matches,
+                    },
+                    jsonMode,
+                    () => {
+                        success(`Seeded status broadcast fixture ${fixture.msgId}`);
+                        info(`Validate with: zalo-agent --json msg search ${JSON.stringify(fixture.text)} --status --limit 3`);
+                    },
+                );
+                process.exit(0);
+            } catch (e) {
+                error(`Seed status broadcast failed: ${e.message}`);
                 process.exit(1);
             }
         });

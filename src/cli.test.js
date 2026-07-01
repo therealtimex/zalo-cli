@@ -47,6 +47,7 @@ describe("CLI interface", () => {
         assert.match(out, /delete/);
         assert.match(out, /forward/);
         assert.match(out, /search/);
+        assert.match(out, /seed-status-broadcast/);
         assert.match(out, /download/);
         assert.match(out, /media-sync/);
     });
@@ -60,6 +61,14 @@ describe("CLI interface", () => {
         assert.match(out, /--until/);
         assert.match(out, /--type/);
         assert.match(out, /--status/);
+    });
+
+    it("msg seed-status-broadcast --help lists QA fixture options", () => {
+        const out = run("msg", "seed-status-broadcast", "--help");
+        assert.match(out, /--id/);
+        assert.match(out, /--sender-id/);
+        assert.match(out, /--text/);
+        assert.match(out, /--timestamp/);
     });
 
     it("listen --help lists option --download-media", () => {

@@ -233,6 +233,19 @@ zalo-agent listen                          # 4. Listen for threadId
 zalo-agent msg send <THREAD_ID> "Hello!"   # 5. Send a message
 ```
 
+**Installed CLI QA fixture for status-broadcast search:**
+
+Use this only when validating the installed CLI boundary and the authenticated local cache has no status broadcasts.
+It writes one local `status_broadcasts` row for the active account, then verifies it through the same offline search path:
+
+```bash
+zalo-agent --json msg seed-status-broadcast
+zalo-agent --json msg search "qa-status-broadcast-positive-fixture" --status --limit 3
+```
+
+Expected search JSON includes `"status": true`, `"count": 1`, and a message with
+`"threadId": "status@broadcast"` and `"msgId": "qa-status-broadcast-fixture"`.
+
 ### Commands
 
 Full docs: **[Wiki](https://github.com/PhucMPham/zalo-agent-cli/wiki)**
