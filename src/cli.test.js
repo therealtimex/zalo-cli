@@ -32,6 +32,7 @@ describe("CLI interface", () => {
         assert.match(out, /group/);
         assert.match(out, /conv/);
         assert.match(out, /account/);
+        assert.match(out, /doctor/);
     });
 
     it("msg --help lists all subcommands", () => {
@@ -109,6 +110,20 @@ describe("CLI interface", () => {
         assert.match(out, /--delay/);
         assert.match(out, /--timeout/);
         assert.match(out, /--download-media/);
+    });
+
+    it("doctor --help lists doctor flags", () => {
+        const out = run("doctor", "--help");
+        assert.match(out, /--connect/);
+        assert.match(out, /--json/);
+    });
+
+    it("doctor --json on clean state is parseable and does not require auth", () => {
+        const out = run("doctor", "--json");
+        const data = JSON.parse(out);
+        assert.equal(data.auth.active, false);
+        assert.equal(data.store.exists, false);
+        assert.equal(data.connect.attempted, false);
     });
 
     it("sync fails on clean state since not logged in", () => {

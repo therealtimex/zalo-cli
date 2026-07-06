@@ -27,6 +27,7 @@ import { registerLabelCommands } from "./commands/label.js";
 import { registerCatalogCommands } from "./commands/catalog.js";
 import { registerListenCommand } from "./commands/listen.js";
 import { registerSyncCommand } from "./commands/sync.js";
+import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerOACommands } from "./commands/oa.js";
 import { registerMCPCommands } from "./commands/mcp.js";
 import { autoLogin } from "./core/zalo-client.js";
@@ -57,7 +58,9 @@ program
             console.log();
         }
         // Auto-login before any command that needs it (skip for login/account/oa commands)
-        const skipAutoLogin = ["login", "account", "help", "version", "update", "oa", "mcp"].includes(cmdName);
+        const skipAutoLogin = ["login", "account", "help", "version", "update", "oa", "mcp", "doctor"].includes(
+            cmdName,
+        );
         if (!skipAutoLogin) {
             await autoLogin(program.opts().json, {
                 readonly: program.opts().readOnly,
@@ -96,6 +99,7 @@ registerLabelCommands(program);
 registerCatalogCommands(program);
 registerListenCommand(program);
 registerSyncCommand(program);
+registerDoctorCommand(program);
 registerOACommands(program);
 registerMCPCommands(program);
 
