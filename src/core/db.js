@@ -150,6 +150,27 @@ function runMigrations(db) {
         CREATE INDEX IF NOT EXISTS idx_messages_thread_ts ON messages(thread_id, ts);
         CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
 
+        -- 6. Status broadcasts are kept out of regular chat history.
+        CREATE TABLE IF NOT EXISTS status_broadcasts (
+            msg_id TEXT PRIMARY KEY,
+            thread_id TEXT,
+            sender_id TEXT,
+            sender_name TEXT,
+            ts INTEGER NOT NULL,
+            from_me INTEGER NOT NULL DEFAULT 0,
+            text TEXT,
+            msg_type TEXT,
+            content_json TEXT,
+            local_path TEXT,
+            recalled INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_status_broadcasts_sender_ts ON status_broadcasts(sender_id, ts);
+        CREATE INDEX IF NOT EXISTS idx_status_broadcasts_ts ON status_broadcasts(ts);
+    `);
+
+    try {
+        db.exec(`
         -- 6. Full-Text Search (FTS5) for fast offline message search
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             msg_id UNINDEXED,
@@ -178,6 +199,31 @@ function runMigrations(db) {
             VALUES (new.rowid, new.msg_id, new.thread_id, new.sender_name, new.text);
         END;
     `);
+    } catch {
+        // FTS5 is optional. Search falls back to LIKE when unavailable.
+    }
+}
+
+export function isStatusBroadcastMessage(msg = {}) {
+    const values = [
+        msg.threadId,
+        msg.thread_id,
+        msg.statusThreadId,
+        msg.data?.threadId,
+        msg.data?.idTo,
+        msg.data?.statusId,
+        msg.content?.idTo,
+    ]
+        .filter((value) => value !== undefined && value !== null)
+        .map((value) => String(value).toLowerCase());
+
+    return (
+        msg.isStatus === true ||
+        msg.isStatusBroadcast === true ||
+        values.some((value) => value === "status@broadcast" || value.includes("status_broadcast")) ||
+        msg.data?.isStatus === true ||
+        msg.data?.isStatusBroadcast === true
+    );
 }
 
 export function upsertChat(chat) {
@@ -293,6 +339,11 @@ export function upsertMessage(msg) {
     const db = getDb();
     if (!db) return;
 
+    if (isStatusBroadcastMessage(msg)) {
+        upsertStatusBroadcast(msg);
+        return;
+    }
+
     // Ensure parent chat exists
     const threadId = msg.threadId;
     const chatExists = db.prepare("SELECT 1 FROM chats WHERE thread_id = ?").get(threadId);
@@ -342,6 +393,40 @@ export function upsertMessage(msg) {
     stmt.run(
         msg.msgId,
         threadId,
+        msg.senderId ?? null,
+        msg.senderName ?? null,
+        msg.ts,
+        msg.fromMe ?? 0,
+        msg.text ?? null,
+        msg.msgType ?? "text",
+        msg.contentJson ?? null,
+        msg.localPath ?? null,
+        msg.recalled ?? 0,
+    );
+}
+
+export function upsertStatusBroadcast(msg) {
+    const db = getDb();
+    if (!db) return;
+
+    const stmt = db.prepare(`
+        INSERT INTO status_broadcasts (msg_id, thread_id, sender_id, sender_name, ts, from_me, text, msg_type, content_json, local_path, recalled)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(msg_id) DO UPDATE SET
+            thread_id = COALESCE(excluded.thread_id, status_broadcasts.thread_id),
+            sender_id = COALESCE(excluded.sender_id, status_broadcasts.sender_id),
+            sender_name = COALESCE(excluded.sender_name, status_broadcasts.sender_name),
+            ts = COALESCE(excluded.ts, status_broadcasts.ts),
+            from_me = COALESCE(excluded.from_me, status_broadcasts.from_me),
+            text = COALESCE(excluded.text, status_broadcasts.text),
+            msg_type = COALESCE(excluded.msg_type, status_broadcasts.msg_type),
+            content_json = COALESCE(excluded.content_json, status_broadcasts.content_json),
+            local_path = COALESCE(excluded.local_path, status_broadcasts.local_path),
+            recalled = CASE WHEN status_broadcasts.recalled = 1 THEN 1 ELSE excluded.recalled END
+    `);
+    stmt.run(
+        msg.msgId,
+        msg.threadId ?? null,
         msg.senderId ?? null,
         msg.senderName ?? null,
         msg.ts,
@@ -430,6 +515,209 @@ export function getLocalMessages(threadId, limit) {
         timestamp: Number(row.ts),
         type: row.msg_type,
     }));
+}
+
+function normalizeDirection(value) {
+    if (value === undefined || value === null || value === "") return null;
+    if (typeof value === "boolean") return value ? 1 : 0;
+    const normalized = String(value).toLowerCase();
+    if (["outgoing", "sent", "self", "me", "from_me", "1", "true"].includes(normalized)) return 1;
+    if (["incoming", "received", "inbound", "0", "false"].includes(normalized)) return 0;
+    throw new Error("direction must be incoming, outgoing, or from_me");
+}
+
+function parseTimestamp(value, name) {
+    if (value === undefined || value === null || value === "") return null;
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === "number") return value;
+    const text = String(value);
+    if (/^\d+$/.test(text)) return Number(text);
+    const parsed = Date.parse(text);
+    if (Number.isNaN(parsed)) throw new Error(`${name} must be a millisecond timestamp or parseable date`);
+    return parsed;
+}
+
+function escapeLike(value) {
+    return String(value).replace(/[\\%_]/g, "\\$&");
+}
+
+function mapMessageRow(row) {
+    return {
+        msgId: row.msg_id,
+        threadId: row.thread_id,
+        senderId: row.sender_id,
+        senderName: row.sender_name,
+        text: row.text,
+        timestamp: Number(row.ts),
+        fromMe: row.from_me === 1,
+        direction: row.from_me === 1 ? "outgoing" : "incoming",
+        type: row.msg_type,
+        localPath: row.local_path,
+        recalled: row.recalled === 1,
+    };
+}
+
+function addMessageFilters({ conditions, params, options, alias = "m" }) {
+    const threadId = options.threadId ?? options.thread ?? options.chat;
+    if (threadId) {
+        conditions.push(`${alias}.thread_id = ?`);
+        params.push(String(threadId));
+    }
+
+    if (options.senderId) {
+        conditions.push(`${alias}.sender_id = ?`);
+        params.push(String(options.senderId));
+    }
+
+    if (options.senderName) {
+        conditions.push(`${alias}.sender_name = ?`);
+        params.push(String(options.senderName));
+    }
+
+    if (options.sender) {
+        conditions.push(`(${alias}.sender_id = ? OR ${alias}.sender_name LIKE ? ESCAPE '\\')`);
+        params.push(String(options.sender), `%${escapeLike(options.sender)}%`);
+    }
+
+    const fromMe = options.fromMe ?? normalizeDirection(options.direction);
+    if (fromMe !== undefined && fromMe !== null && fromMe !== "") {
+        conditions.push(`${alias}.from_me = ?`);
+        params.push(normalizeDirection(fromMe));
+    }
+
+    const startTs = parseTimestamp(options.startTs ?? options.after ?? options.since, "start time");
+    if (startTs !== null) {
+        conditions.push(`${alias}.ts >= ?`);
+        params.push(startTs);
+    }
+
+    const endTs = parseTimestamp(options.endTs ?? options.before ?? options.until, "end time");
+    if (endTs !== null) {
+        conditions.push(`${alias}.ts <= ?`);
+        params.push(endTs);
+    }
+
+    const type = options.msgType ?? options.mediaType ?? options.type;
+    if (type) {
+        conditions.push(`${alias}.msg_type = ?`);
+        params.push(String(type));
+    }
+
+    if (options.media === true || options.media === "true") {
+        conditions.push(`${alias}.msg_type != 'text'`);
+    }
+}
+
+function hasFtsTable(db) {
+    return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").get();
+}
+
+function likeSearchWhere(query, alias = "m") {
+    if (!query) return { sql: "", params: [] };
+    const pattern = `%${escapeLike(query)}%`;
+    return {
+        sql: `(${alias}.text LIKE ? ESCAPE '\\' OR ${alias}.sender_name LIKE ? ESCAPE '\\' OR ${alias}.content_json LIKE ? ESCAPE '\\')`,
+        params: [pattern, pattern, pattern],
+    };
+}
+
+function runMessageLikeSearch(db, options, ftsError = null) {
+    const conditions = [];
+    const params = [];
+    const like = likeSearchWhere(options.query, "m");
+    if (like.sql) {
+        conditions.push(like.sql);
+        params.push(...like.params);
+    }
+    addMessageFilters({ conditions, params, options, alias: "m" });
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limit = Number(options.limit || 20);
+    const rows = db
+        .prepare(
+            `
+            SELECT m.msg_id, m.thread_id, m.sender_id, m.sender_name, m.ts, m.from_me, m.text, m.msg_type, m.local_path, m.recalled
+            FROM messages m
+            ${where}
+            ORDER BY m.ts DESC
+            LIMIT ?
+        `,
+        )
+        .all(...params, limit);
+
+    return {
+        mode: "like",
+        fallback: !!ftsError,
+        ftsError: ftsError ? ftsError.message : null,
+        messages: rows.map(mapMessageRow),
+    };
+}
+
+export function searchLocalMessages(options = {}) {
+    const db = getDb();
+    if (!db) return { mode: "none", fallback: false, messages: [] };
+
+    const query = options.query ?? options.text ?? options.q ?? "";
+    const normalizedOptions = { ...options, query };
+
+    if (!query) {
+        return runMessageLikeSearch(db, normalizedOptions);
+    }
+
+    try {
+        if (!hasFtsTable(db)) throw new Error("messages_fts table is unavailable");
+        const conditions = ["messages_fts MATCH ?"];
+        const params = [query];
+        addMessageFilters({ conditions, params, options: normalizedOptions, alias: "m" });
+        const where = `WHERE ${conditions.join(" AND ")}`;
+        const limit = Number(normalizedOptions.limit || 20);
+        const rows = db
+            .prepare(
+                `
+                SELECT m.msg_id, m.thread_id, m.sender_id, m.sender_name, m.ts, m.from_me, m.text, m.msg_type, m.local_path, m.recalled
+                FROM messages_fts f
+                JOIN messages m ON m.rowid = f.rowid
+                ${where}
+                ORDER BY m.ts DESC
+                LIMIT ?
+            `,
+            )
+            .all(...params, limit);
+
+        return {
+            mode: "fts5",
+            fallback: false,
+            messages: rows.map(mapMessageRow),
+        };
+    } catch (ftsError) {
+        return runMessageLikeSearch(db, normalizedOptions, ftsError);
+    }
+}
+
+export function getLocalStatusBroadcasts(options = {}) {
+    const db = getDb();
+    if (!db) return [];
+    const conditions = [];
+    const params = [];
+    const like = likeSearchWhere(options.query ?? options.text ?? options.q, "s");
+    if (like.sql) {
+        conditions.push(like.sql);
+        params.push(...like.params);
+    }
+    addMessageFilters({ conditions, params, options, alias: "s" });
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limit = Number(options.limit || 20);
+    const rows = db
+        .prepare(
+            `
+            SELECT s.msg_id, s.thread_id, s.sender_id, s.sender_name, s.ts, s.from_me, s.text, s.msg_type, s.local_path, s.recalled
+            FROM status_broadcasts s
+            ${where}
+            ORDER BY s.ts DESC
+            LIMIT ?
+        `,
+        )
+        .all(...params, limit);
+    return rows.map(mapMessageRow);
 }
 
 export function getOldestMessageId(threadId) {
