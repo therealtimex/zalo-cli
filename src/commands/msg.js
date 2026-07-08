@@ -10,9 +10,12 @@ import { success, error, info, output, warning } from "../utils/output.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import {
     getDb,
+    getLocalMessageById,
+    getLocalMessageContext,
     getLocalMessages,
     getLocalMessagesCount,
     getLocalStatusBroadcasts,
+    listLocalMessages,
     getOldestMessageId,
     searchLocalMessages,
     upsertMessage,
@@ -172,6 +175,63 @@ function buildStatusBroadcastFixture({ msgId, senderId, senderName, text, msgTyp
             seededAt: new Date(ts).toISOString(),
         }),
     };
+}
+
+function previewMessageText(message) {
+    if (message.recalled) return "[recalled/deleted]";
+    return (message.text || "").slice(0, 200);
+}
+
+function formatLocalMessageLine(message) {
+    const date = message.timestamp ? new Date(message.timestamp).toLocaleString() : "?";
+    const threadName = message.threadName ? ` ${message.threadName}` : "";
+    const sender = message.senderName || message.senderId || "?";
+    const type = message.type || "unknown";
+    const dir = message.fromMe ? "outgoing" : "incoming";
+    const recalled = message.recalled ? " recalled/deleted" : "";
+    return `[${date}] [${message.threadId}${threadName}] [${type}/${dir}${recalled}] ${sender}: ${previewMessageText(message)}`;
+}
+
+function localMessageFiltersFromOptions(opts) {
+    if (opts.fromMe !== undefined && opts.fromThem) {
+        throw new Error("Use only one of --from-me or --from-them.");
+    }
+    return {
+        threadId: opts.chat || opts.thread,
+        sender: opts.sender || opts.from,
+        senderId: opts.senderId,
+        senderName: opts.senderName,
+        direction: opts.direction,
+        fromMe: opts.fromThem ? false : parseFromMe(opts.fromMe),
+        since: opts.since || opts.after,
+        until: opts.until || opts.before,
+        msgType: opts.type,
+        media: opts.media,
+        hasMedia: opts.hasMedia,
+        limit: Number(opts.limit),
+        order: opts.order,
+    };
+}
+
+function addLocalMessageFilterOptions(command) {
+    return command
+        .option("-c, --chat <threadId>", "Filter by chat/thread ID")
+        .option("--thread <threadId>", "Alias for --chat")
+        .option("-s, --sender <sender>", "Filter by sender ID or sender display name")
+        .option("--from <sender>", "Alias for --sender")
+        .option("--sender-id <senderId>", "Filter by exact sender ID")
+        .option("--sender-name <name>", "Filter by exact sender display name")
+        .option("-d, --direction <direction>", "Filter by direction: incoming, outgoing, or from_me")
+        .option("--from-me [value]", "Filter by from_me flag: true/false or 1/0")
+        .option("--from-them", "Only show incoming messages")
+        .option("--since <time>", "Filter messages at or after a millisecond timestamp or parseable date")
+        .option("--after <time>", "Alias for --since")
+        .option("--until <time>", "Filter messages at or before a millisecond timestamp or parseable date")
+        .option("--before <time>", "Alias for --until")
+        .option("--type <type>", "Filter by message/media type, for example text, image, file, voice")
+        .option("--media", "Only include non-text media messages")
+        .option("--has-media", "Only include messages with a downloaded local media path")
+        .option("-n, --limit <n>", "Maximum results to return", "20");
 }
 
 export function persistOutgoingTextMessage({
@@ -615,6 +675,130 @@ export function registerMsgCommands(program) {
                 output(result, program.opts().json, () => success("Message forwarded"));
             } catch (e) {
                 error(e.message);
+            }
+        });
+
+    addLocalMessageFilterOptions(msg.command("list").description("List cached local messages without remote fetches"))
+        .option("--order <order>", "Sort order: desc or asc", "desc")
+        .action(async (opts) => {
+            const jsonMode = program.opts().json;
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+                const filters = localMessageFiltersFromOptions(opts);
+                const messages = listLocalMessages(filters);
+                output(
+                    {
+                        source: "local",
+                        count: messages.length,
+                        filters,
+                        messages,
+                    },
+                    jsonMode,
+                    () => {
+                        success(`${messages.length} cached message(s) found`);
+                        for (const message of messages) console.log(`  ${formatLocalMessageLine(message)}`);
+                    },
+                );
+                process.exit(0);
+            } catch (e) {
+                error(`Local message list failed: ${e.message}`);
+                process.exit(1);
+            }
+        });
+
+    msg.command("show")
+        .description("Show one cached local message by message ID")
+        .requiredOption("--id <msgId>", "Cached message ID")
+        .action(async (opts) => {
+            const jsonMode = program.opts().json;
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+                const message = getLocalMessageById(opts.id);
+                if (!message) {
+                    output({ source: "local", found: false, msgId: opts.id, message: null }, jsonMode, () =>
+                        error(`Message with ID '${opts.id}' not found in local cache.`),
+                    );
+                    process.exit(1);
+                }
+                output(
+                    {
+                        source: "local",
+                        found: true,
+                        msgId: opts.id,
+                        message,
+                    },
+                    jsonMode,
+                    () => {
+                        success(`Cached message ${message.msgId}`);
+                        console.log(`  ${formatLocalMessageLine(message)}`);
+                        if (message.localPath) console.log(`  localPath: ${message.localPath}`);
+                    },
+                );
+                process.exit(0);
+            } catch (e) {
+                error(`Local message show failed: ${e.message}`);
+                process.exit(1);
+            }
+        });
+
+    msg.command("context")
+        .description("Show cached local messages around a message ID")
+        .requiredOption("--id <msgId>", "Cached message ID")
+        .option("--before <n>", "Number of same-thread messages before the target", "3")
+        .option("--after <n>", "Number of same-thread messages after the target", "3")
+        .action(async (opts) => {
+            const jsonMode = program.opts().json;
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+                const context = getLocalMessageContext(opts.id, {
+                    before: Number(opts.before),
+                    after: Number(opts.after),
+                });
+                if (!context.target) {
+                    output(
+                        { source: "local", found: false, msgId: opts.id, before: [], target: null, after: [] },
+                        jsonMode,
+                        () => error(`Message with ID '${opts.id}' not found in local cache.`),
+                    );
+                    process.exit(1);
+                }
+                output(
+                    {
+                        source: "local",
+                        found: true,
+                        msgId: opts.id,
+                        threadId: context.target.threadId,
+                        before: context.before,
+                        target: context.target,
+                        after: context.after,
+                        count: context.before.length + 1 + context.after.length,
+                    },
+                    jsonMode,
+                    () => {
+                        success(
+                            `${context.before.length} before, target, ${context.after.length} after in ${context.target.threadId}`,
+                        );
+                        for (const message of context.before) console.log(`  ${formatLocalMessageLine(message)}`);
+                        console.log(`> ${formatLocalMessageLine(context.target)}`);
+                        for (const message of context.after) console.log(`  ${formatLocalMessageLine(message)}`);
+                    },
+                );
+                process.exit(0);
+            } catch (e) {
+                error(`Local message context failed: ${e.message}`);
+                process.exit(1);
             }
         });
 

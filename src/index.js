@@ -64,7 +64,8 @@ program
         const skipAutoLogin = ["login", "account", "help", "version", "update", "oa", "mcp", "doctor"].includes(
             cmdName,
         );
-        if (cmdName === "msg" && subCmdName === "search") {
+        const localMsgCommands = ["search", "list", "show", "context"];
+        if (cmdName === "msg" && localMsgCommands.includes(subCmdName)) {
             const active = getActive();
             if (active?.ownId) {
                 await initDatabase(active.ownId, {

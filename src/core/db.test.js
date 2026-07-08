@@ -12,14 +12,18 @@ const {
     initDatabase,
     closeDatabase,
     getDb,
+    upsertChat,
     upsertContact,
     upsertGroup,
     upsertMessage,
+    getLocalMessageById,
+    getLocalMessageContext,
     getLocalChats,
     getLocalFriends,
     getLocalMessages,
     getLocalMessagesCount,
     getLocalStatusBroadcasts,
+    listLocalMessages,
     searchLocalMessages,
 } = await import("./db.js");
 
@@ -298,6 +302,180 @@ describe("Local SQLite Storage & Caching Layer", () => {
             ["filter-hit"],
         );
         assert.equal(result.messages[0].localPath, "/tmp/receipt.png");
+    });
+
+    it("lists cached messages with filters, ordering, recalled rows, and empty results", async () => {
+        const ownId = "test_user_local_list";
+        await initDatabase(ownId);
+
+        upsertChat({ threadId: "thread-list", type: 1, name: "List Thread", lastMessageTs: 5000 });
+        const rows = [
+            {
+                msgId: "list-1",
+                threadId: "thread-list",
+                senderId: "alice",
+                senderName: "Alice",
+                ts: 1000,
+                fromMe: 0,
+                text: "plain text",
+                msgType: "text",
+            },
+            {
+                msgId: "list-2",
+                threadId: "thread-list",
+                senderId: ownId,
+                senderName: "Me",
+                ts: 2000,
+                fromMe: 1,
+                text: "photo sent",
+                msgType: "image",
+                localPath: "/tmp/photo.jpg",
+            },
+            {
+                msgId: "list-3",
+                threadId: "thread-list",
+                senderId: "alice",
+                senderName: "Alice",
+                ts: 3000,
+                fromMe: 0,
+                text: null,
+                msgType: "text",
+                recalled: 1,
+            },
+            {
+                msgId: "list-other-thread",
+                threadId: "other-thread",
+                senderId: "alice",
+                senderName: "Alice",
+                ts: 2500,
+                fromMe: 0,
+                text: "wrong thread",
+                msgType: "image",
+                localPath: "/tmp/other.jpg",
+            },
+        ];
+        for (const row of rows) upsertMessage(row);
+
+        const desc = listLocalMessages({ threadId: "thread-list", limit: 2 });
+        assert.deepEqual(
+            desc.map((m) => m.msgId),
+            ["list-3", "list-2"],
+        );
+        assert.equal(desc[0].threadName, "List Thread");
+        assert.equal(desc[0].recalled, true);
+
+        const asc = listLocalMessages({ threadId: "thread-list", order: "asc", limit: 3 });
+        assert.deepEqual(
+            asc.map((m) => m.msgId),
+            ["list-1", "list-2", "list-3"],
+        );
+
+        const mediaFromMe = listLocalMessages({
+            threadId: "thread-list",
+            sender: ownId,
+            direction: "outgoing",
+            msgType: "image",
+            hasMedia: true,
+            since: 1500,
+            until: 2500,
+            limit: 10,
+        });
+        assert.deepEqual(
+            mediaFromMe.map((m) => m.msgId),
+            ["list-2"],
+        );
+        assert.equal(mediaFromMe[0].localPath, "/tmp/photo.jpg");
+        assert.equal(mediaFromMe[0].fromMe, true);
+
+        assert.deepEqual(listLocalMessages({ threadId: "missing-thread", limit: 10 }), []);
+    });
+
+    it("gets one cached message by id with parsed and raw content metadata", async () => {
+        const ownId = "test_user_local_show";
+        await initDatabase(ownId);
+
+        upsertChat({ threadId: "thread-show", type: 0, name: "Show Thread", lastMessageTs: 1000 });
+        const content = { actionId: "action-show-1", attachment: { width: 640 }, nested: true };
+        upsertMessage({
+            msgId: "show-1",
+            threadId: "thread-show",
+            senderId: "bob",
+            senderName: "Bob",
+            ts: 1234,
+            fromMe: 0,
+            text: "full message text",
+            msgType: "image",
+            contentJson: JSON.stringify(content),
+            localPath: "/tmp/show.png",
+            recalled: 1,
+        });
+
+        const message = getLocalMessageById("show-1");
+        assert.equal(message.msgId, "show-1");
+        assert.equal(message.threadId, "thread-show");
+        assert.equal(message.threadName, "Show Thread");
+        assert.equal(message.senderId, "bob");
+        assert.equal(message.senderName, "Bob");
+        assert.equal(message.timestamp, 1234);
+        assert.equal(message.fromMe, false);
+        assert.equal(message.direction, "incoming");
+        assert.equal(message.type, "image");
+        assert.equal(message.text, "full message text");
+        assert.equal(message.localPath, "/tmp/show.png");
+        assert.equal(message.recalled, true);
+        assert.deepEqual(message.content, content);
+        assert.equal(message.rawContentJson, JSON.stringify(content));
+        assert.equal(getLocalMessageById("missing-message"), null);
+    });
+
+    it("returns same-thread context before and after a cached target message", async () => {
+        const ownId = "test_user_local_context";
+        await initDatabase(ownId);
+
+        upsertChat({ threadId: "thread-context", type: 0, name: "Context Thread", lastMessageTs: 5000 });
+        for (const row of [
+            ["ctx-1", "thread-context", 1000],
+            ["ctx-2", "thread-context", 2000],
+            ["ctx-3", "thread-context", 3000],
+            ["ctx-4", "thread-context", 4000],
+            ["ctx-other", "other-context", 2500],
+        ]) {
+            upsertMessage({
+                msgId: row[0],
+                threadId: row[1],
+                senderId: "sender",
+                senderName: "Sender",
+                ts: row[2],
+                text: row[0],
+                msgType: "text",
+            });
+        }
+
+        const context = getLocalMessageContext("ctx-3", { before: 2, after: 2 });
+        assert.equal(context.target.msgId, "ctx-3");
+        assert.deepEqual(
+            context.before.map((m) => m.msgId),
+            ["ctx-1", "ctx-2"],
+        );
+        assert.deepEqual(
+            context.after.map((m) => m.msgId),
+            ["ctx-4"],
+        );
+        assert.ok(!context.before.some((m) => m.msgId === "ctx-other"));
+        assert.ok(!context.after.some((m) => m.msgId === "ctx-other"));
+
+        const edge = getLocalMessageContext("ctx-1", { before: 3, after: 1 });
+        assert.deepEqual(edge.before, []);
+        assert.deepEqual(
+            edge.after.map((m) => m.msgId),
+            ["ctx-2"],
+        );
+
+        assert.deepEqual(getLocalMessageContext("missing-context", { before: 1, after: 1 }), {
+            target: null,
+            before: [],
+            after: [],
+        });
     });
 
     it("falls back to LIKE for special-character-only queries", async () => {

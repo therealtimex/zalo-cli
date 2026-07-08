@@ -541,10 +541,20 @@ function escapeLike(value) {
     return String(value).replace(/[\\%_]/g, "\\$&");
 }
 
-function mapMessageRow(row) {
-    return {
+function parseContentJson(value) {
+    if (!value) return null;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return null;
+    }
+}
+
+function mapMessageRow(row, options = {}) {
+    const message = {
         msgId: row.msg_id,
         threadId: row.thread_id,
+        threadName: row.thread_name ?? null,
         senderId: row.sender_id,
         senderName: row.sender_name,
         text: row.text,
@@ -555,6 +565,11 @@ function mapMessageRow(row) {
         localPath: row.local_path,
         recalled: row.recalled === 1,
     };
+    if (options.includeContent) {
+        message.content = parseContentJson(row.content_json);
+        message.rawContentJson = row.content_json;
+    }
+    return message;
 }
 
 function addMessageFilters({ conditions, params, options, alias = "m" }) {
@@ -708,6 +723,104 @@ export function searchLocalMessages(options = {}) {
     } catch (ftsError) {
         return runMessageLikeSearch(db, normalizedOptions, ftsError);
     }
+}
+
+export function listLocalMessages(options = {}) {
+    const db = getDb();
+    if (!db) return [];
+
+    const conditions = [];
+    const params = [];
+    addMessageFilters({ conditions, params, options, alias: "m" });
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const order = String(options.order || options.sort || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+    const limit = Number(options.limit || 20);
+    const rows = db
+        .prepare(
+            `
+            SELECT m.msg_id, m.thread_id, c.name AS thread_name, m.sender_id, m.sender_name, m.ts, m.from_me,
+                   m.text, m.msg_type, m.local_path, m.recalled
+            FROM messages m
+            LEFT JOIN chats c ON c.thread_id = m.thread_id
+            ${where}
+            ORDER BY m.ts ${order}, m.msg_id ${order}
+            LIMIT ?
+        `,
+        )
+        .all(...params, limit);
+    return rows.map((row) => mapMessageRow(row));
+}
+
+export function getLocalMessageById(msgId) {
+    const db = getDb();
+    if (!db) return null;
+    const row = db
+        .prepare(
+            `
+            SELECT m.msg_id, m.thread_id, c.name AS thread_name, m.sender_id, m.sender_name, m.ts, m.from_me,
+                   m.text, m.msg_type, m.content_json, m.local_path, m.recalled
+            FROM messages m
+            LEFT JOIN chats c ON c.thread_id = m.thread_id
+            WHERE m.msg_id = ?
+        `,
+        )
+        .get(String(msgId));
+    return row ? mapMessageRow(row, { includeContent: true }) : null;
+}
+
+export function getLocalMessageContext(msgId, options = {}) {
+    const db = getDb();
+    if (!db) return { target: null, before: [], after: [] };
+
+    const targetRow = db
+        .prepare(
+            `
+            SELECT m.msg_id, m.thread_id, c.name AS thread_name, m.sender_id, m.sender_name, m.ts, m.from_me,
+                   m.text, m.msg_type, m.content_json, m.local_path, m.recalled
+            FROM messages m
+            LEFT JOIN chats c ON c.thread_id = m.thread_id
+            WHERE m.msg_id = ?
+        `,
+        )
+        .get(String(msgId));
+    if (!targetRow) return { target: null, before: [], after: [] };
+
+    const beforeLimit = Number(options.before ?? 3);
+    const afterLimit = Number(options.after ?? 3);
+    const target = mapMessageRow(targetRow, { includeContent: true });
+    const select = `
+        SELECT m.msg_id, m.thread_id, c.name AS thread_name, m.sender_id, m.sender_name, m.ts, m.from_me,
+               m.text, m.msg_type, m.local_path, m.recalled
+        FROM messages m
+        LEFT JOIN chats c ON c.thread_id = m.thread_id
+    `;
+    const beforeRows = db
+        .prepare(
+            `
+            ${select}
+            WHERE m.thread_id = ? AND (m.ts < ? OR (m.ts = ? AND m.msg_id < ?))
+            ORDER BY m.ts DESC, m.msg_id DESC
+            LIMIT ?
+        `,
+        )
+        .all(target.threadId, target.timestamp, target.timestamp, target.msgId, beforeLimit)
+        .reverse();
+    const afterRows = db
+        .prepare(
+            `
+            ${select}
+            WHERE m.thread_id = ? AND (m.ts > ? OR (m.ts = ? AND m.msg_id > ?))
+            ORDER BY m.ts ASC, m.msg_id ASC
+            LIMIT ?
+        `,
+        )
+        .all(target.threadId, target.timestamp, target.timestamp, target.msgId, afterLimit);
+
+    return {
+        target,
+        before: beforeRows.map((row) => mapMessageRow(row)),
+        after: afterRows.map((row) => mapMessageRow(row)),
+    };
 }
 
 export function getLocalStatusBroadcasts(options = {}) {
