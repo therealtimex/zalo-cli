@@ -992,6 +992,77 @@ export function listLocalMessages(options = {}) {
     return rows.map((row) => mapMessageRow(row));
 }
 
+function queryExportMessages(table, alias, options = {}) {
+    const db = getDb();
+    if (!db) return [];
+
+    const conditions = [];
+    const params = [];
+    addMessageFilters({ conditions, params, options, alias });
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const order = normalizeMessageOrder(options.order || options.sort);
+    const limit = parseIntegerOption(options.limit, "limit", 100, { min: 1 });
+    const includeRaw = options.includeRaw === true || options.raw === true;
+    const contentColumn = includeRaw ? `, ${alias}.content_json` : "";
+    const joinChat = table === "messages" ? "LEFT JOIN chats c ON c.thread_id = m.thread_id" : "";
+    const threadNameColumn = table === "messages" ? "c.name AS thread_name" : "NULL AS thread_name";
+
+    const rows = db
+        .prepare(
+            `
+            SELECT ${alias}.msg_id, ${alias}.thread_id, ${threadNameColumn}, ${alias}.sender_id,
+                   ${alias}.sender_name, ${alias}.ts, ${alias}.from_me, ${alias}.text,
+                   ${alias}.msg_type, ${alias}.local_path, ${alias}.recalled${contentColumn}
+            FROM ${table} ${alias}
+            ${joinChat}
+            ${where}
+            ORDER BY ${alias}.ts ${order}, ${alias}.msg_id ${order}
+            LIMIT ?
+        `,
+        )
+        .all(...params, limit);
+    return rows.map((row) => mapMessageRow(row, { includeContent: includeRaw }));
+}
+
+export function exportLocalMessages(options = {}) {
+    const includeStatus = options.status === true || options.status === "true";
+    const messages = queryExportMessages(
+        includeStatus ? "status_broadcasts" : "messages",
+        includeStatus ? "s" : "m",
+        options,
+    );
+    const generatedAt = options.generatedAt || new Date(options.now || Date.now()).toISOString();
+    const filters = {
+        threadId: options.threadId ?? options.thread ?? options.chat ?? null,
+        sender: options.sender ?? null,
+        senderId: options.senderId ?? null,
+        senderName: options.senderName ?? null,
+        direction: options.direction ?? null,
+        fromMe: options.fromMe ?? null,
+        since: options.since ?? options.after ?? null,
+        until: options.until ?? options.before ?? null,
+        type: options.msgType ?? options.mediaType ?? options.type ?? null,
+        media: options.media === true || options.media === "true",
+        hasMedia: options.hasMedia === true || options.hasMedia === "true",
+        status: includeStatus,
+        limit: parseIntegerOption(options.limit, "limit", 100, { min: 1 }),
+        order: String(options.order || options.sort || "desc").toLowerCase(),
+        includeRaw: options.includeRaw === true || options.raw === true,
+    };
+
+    normalizeMessageOrder(filters.order);
+
+    return {
+        source: "local",
+        local_only: true,
+        accountId: options.accountId ?? null,
+        generatedAt,
+        filters,
+        count: messages.length,
+        messages,
+    };
+}
+
 export function getLocalMessageById(msgId) {
     const db = getDb();
     if (!db) return null;

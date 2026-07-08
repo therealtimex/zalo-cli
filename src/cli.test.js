@@ -56,6 +56,7 @@ describe("CLI interface", () => {
         assert.match(out, /forward/);
         assert.match(out, /search/);
         assert.match(out, /list/);
+        assert.match(out, /export/);
         assert.match(out, /show/);
         assert.match(out, /context/);
         assert.match(out, /seed-status-broadcast/);
@@ -97,6 +98,20 @@ describe("CLI interface", () => {
         assert.match(out, /--media/);
         assert.match(out, /--has-media/);
         assert.match(out, /--order/);
+    });
+
+    it("msg export --help lists local JSON export options", () => {
+        const out = run("msg", "export", "--help");
+        assert.match(out, /--chat/);
+        assert.match(out, /--thread/);
+        assert.match(out, /--after/);
+        assert.match(out, /--before/);
+        assert.match(out, /--limit/);
+        assert.match(out, /--order/);
+        assert.match(out, /--asc/);
+        assert.match(out, /--status/);
+        assert.match(out, /--raw/);
+        assert.match(out, /--output/);
     });
 
     it("msg show and context --help list local inspection options", () => {
@@ -489,6 +504,122 @@ describe("CLI interface", () => {
                 ["--json", "msg", "context", "--id", "cli-local-2", "--after", "abc"],
                 /after must be an integer greater than or equal to 0/,
             );
+        } finally {
+            fs.rmSync(configDir, { recursive: true, force: true });
+        }
+    });
+
+    it("executes msg export as default JSON stdout and optional file write", () => {
+        const configDir = join(tmpdir(), `zalo-agent-cli-export-${process.pid}-${Date.now()}`);
+        const ownId = "cli_export_user";
+        const outputPath = join(configDir, "message-export.json");
+        try {
+            fs.mkdirSync(configDir, { recursive: true });
+            fs.writeFileSync(
+                join(configDir, "accounts.json"),
+                JSON.stringify([{ ownId, name: "CLI Export", proxy: null, active: true }]),
+                "utf-8",
+            );
+
+            execFileSync(
+                "node",
+                [
+                    "--input-type=module",
+                    "-e",
+                    `
+                        process.env.ZALO_CONFIG_DIR = ${JSON.stringify(configDir)};
+                        const { initDatabase, upsertChat, upsertMessage, upsertStatusBroadcast, closeDatabase } = await import(${JSON.stringify(resolve(import.meta.dirname, "core/db.js"))});
+                        await initDatabase(${JSON.stringify(ownId)});
+                        upsertChat({ threadId: "thread_cli_export", type: 1, name: "CLI Export Thread", lastMessageTs: 4000 });
+                        for (const message of [
+                            { msgId: "cli-export-1", threadId: "thread_cli_export", senderId: "friend_cli", senderName: "CLI Friend", ts: 1000, fromMe: 0, text: "export before", msgType: "text" },
+                            { msgId: "cli-export-2", threadId: "thread_cli_export", senderId: ${JSON.stringify(ownId)}, senderName: "Me", ts: 2000, fromMe: 1, text: "export image", msgType: "image", localPath: "/tmp/cli-export.png", contentJson: JSON.stringify({ actionId: "action-cli-export-2", media: true }) },
+                            { msgId: "cli-export-3", threadId: "thread_cli_export", senderId: "friend_cli", senderName: "CLI Friend", ts: 3000, fromMe: 0, text: null, msgType: "text", recalled: 1 },
+                            { msgId: "cli-export-other", threadId: "other_thread", senderId: "friend_cli", senderName: "CLI Friend", ts: 2500, fromMe: 0, text: "other thread", msgType: "text" }
+                        ]) upsertMessage(message);
+                        upsertStatusBroadcast({ msgId: "cli-export-status", threadId: "status@broadcast", senderId: "status_cli", senderName: "CLI Status", ts: 4000, fromMe: 0, text: "status export", msgType: "text", contentJson: JSON.stringify({ status: true }) });
+                        closeDatabase();
+                    `,
+                ],
+                { encoding: "utf-8", timeout: 10000, env: { ...process.env, ZALO_CONFIG_DIR: configDir } },
+            );
+
+            const stdout = runWithEnv(
+                [
+                    "msg",
+                    "export",
+                    "--thread",
+                    "thread_cli_export",
+                    "--after",
+                    "1500",
+                    "--before",
+                    "3500",
+                    "--asc",
+                    "--raw",
+                    "--limit",
+                    "5",
+                ],
+                { ZALO_CONFIG_DIR: configDir },
+            );
+            const exported = JSON.parse(stdout);
+            assert.equal(exported.source, "local");
+            assert.equal(exported.local_only, true);
+            assert.equal(exported.accountId, ownId);
+            assert.match(exported.generatedAt, /^\d{4}-\d{2}-\d{2}T/);
+            assert.equal(exported.filters.threadId, "thread_cli_export");
+            assert.equal(exported.filters.since, "1500");
+            assert.equal(exported.filters.until, "3500");
+            assert.equal(exported.filters.order, "asc");
+            assert.equal(exported.filters.includeRaw, true);
+            assert.equal(exported.count, 2);
+            assert.deepEqual(
+                exported.messages.map((m) => m.msgId),
+                ["cli-export-2", "cli-export-3"],
+            );
+            assert.equal(exported.messages[0].threadName, "CLI Export Thread");
+            assert.equal(exported.messages[0].localPath, "/tmp/cli-export.png");
+            assert.equal(exported.messages[0].content.actionId, "action-cli-export-2");
+            assert.match(exported.messages[0].rawContentJson, /action-cli-export-2/);
+            assert.equal(exported.messages[1].recalled, true);
+
+            const fileStdout = runWithEnv(["msg", "export", "--thread", "thread_cli_export", "--output", outputPath], {
+                ZALO_CONFIG_DIR: configDir,
+            });
+            assert.equal(fileStdout, "");
+            const fileExport = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
+            assert.equal(fileExport.count, 3);
+            assert.equal(fileExport.messages[0].msgId, "cli-export-3");
+
+            const statusOut = runWithEnv(["msg", "export", "--status", "--limit", "2"], {
+                ZALO_CONFIG_DIR: configDir,
+            });
+            const statusExport = JSON.parse(statusOut);
+            assert.equal(statusExport.filters.status, true);
+            assert.equal(statusExport.count, 1);
+            assert.equal(statusExport.messages[0].msgId, "cli-export-status");
+
+            const empty = JSON.parse(
+                runWithEnv(["msg", "export", "--thread", "missing_thread"], {
+                    ZALO_CONFIG_DIR: configDir,
+                }),
+            );
+            assert.equal(empty.count, 0);
+            assert.deepEqual(empty.messages, []);
+
+            const statsAfter = JSON.parse(runWithEnv(["--json", "store", "stats"], { ZALO_CONFIG_DIR: configDir }));
+            assert.equal(statsAfter.counts.messages, 4);
+            assert.equal(statsAfter.counts.status_broadcasts, 1);
+
+            const expectFailure = (args, pattern) => {
+                try {
+                    runWithEnv(args, { ZALO_CONFIG_DIR: configDir });
+                    assert.fail(`${args.join(" ")} should fail`);
+                } catch (e) {
+                    assert.match(e.stdout || e.message, pattern);
+                }
+            };
+            expectFailure(["msg", "export", "--limit", "0"], /limit must be an integer greater than or equal to 1/);
+            expectFailure(["msg", "export", "--order", "sideways"], /order must be asc or desc/);
         } finally {
             fs.rmSync(configDir, { recursive: true, force: true });
         }

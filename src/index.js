@@ -53,7 +53,8 @@ program
         const cmdName = thisCommand.args?.[0] || thisCommand.name();
         const subCmdName = thisCommand.args?.[1];
         // Suppress zca-js internal logs in JSON mode to keep stdout clean for piping
-        if (program.opts().json || cmdName === "mcp") {
+        const localJsonDefault = cmdName === "msg" && subCmdName === "export";
+        if (program.opts().json || cmdName === "mcp" || localJsonDefault) {
             // Suppress zca-js stdout logs: JSON mode needs clean output, MCP uses stdout as transport
             process.env.ZALO_JSON_MODE = "1";
         } else if (cmdName !== "oa" && cmdName !== "store") {
@@ -73,7 +74,7 @@ program
             "doctor",
             "store",
         ].includes(cmdName);
-        const localMsgCommands = ["search", "list", "show", "context"];
+        const localMsgCommands = ["search", "list", "show", "context", "export"];
         if (cmdName === "msg" && localMsgCommands.includes(subCmdName)) {
             const active = getActive();
             if (active?.ownId) {
@@ -90,7 +91,7 @@ program
         }
         // Non-blocking update check (skip for update command itself)
         if (cmdName !== "update") {
-            checkForUpdates(pkg.version, program.opts().json);
+            checkForUpdates(pkg.version, program.opts().json || localJsonDefault);
         }
     });
 

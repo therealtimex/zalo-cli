@@ -17,7 +17,9 @@ const {
     upsertGroup,
     upsertGroupParticipant,
     upsertMessage,
+    upsertStatusBroadcast,
     cleanupLocalStore,
+    exportLocalMessages,
     getLocalMessageById,
     getLocalMessageContext,
     getLocalChats,
@@ -412,6 +414,118 @@ describe("Local SQLite Storage & Caching Layer", () => {
         assert.throws(() => listLocalMessages({ limit: -1 }), /limit must be an integer greater than or equal to 1/);
         assert.throws(() => listLocalMessages({ limit: "abc" }), /limit must be an integer greater than or equal to 1/);
         assert.throws(() => listLocalMessages({ order: "sideways" }), /order must be asc or desc/);
+    });
+
+    it("exports cached messages with metadata, filters, raw content, and stable ordering", async () => {
+        const ownId = "test_user_local_export";
+        await initDatabase(ownId);
+
+        upsertChat({ threadId: "thread-export", type: 1, name: "Export Thread", lastMessageTs: 4000 });
+        for (const row of [
+            {
+                msgId: "export-1",
+                threadId: "thread-export",
+                senderId: "alice",
+                senderName: "Alice",
+                ts: 1000,
+                fromMe: 0,
+                text: "first export row",
+                msgType: "text",
+            },
+            {
+                msgId: "export-2",
+                threadId: "thread-export",
+                senderId: ownId,
+                senderName: "Me",
+                ts: 2000,
+                fromMe: 1,
+                text: "export image row",
+                msgType: "image",
+                localPath: "/tmp/export-image.png",
+                contentJson: JSON.stringify({ actionId: "raw-export-2", media: true }),
+            },
+            {
+                msgId: "export-3",
+                threadId: "thread-export",
+                senderId: "alice",
+                senderName: "Alice",
+                ts: 3000,
+                fromMe: 0,
+                text: null,
+                msgType: "text",
+                recalled: 1,
+            },
+            {
+                msgId: "export-other",
+                threadId: "other-export-thread",
+                senderId: "alice",
+                senderName: "Alice",
+                ts: 2500,
+                fromMe: 0,
+                text: "other thread",
+                msgType: "image",
+                localPath: "/tmp/other-export.png",
+            },
+        ]) {
+            upsertMessage(row);
+        }
+        upsertStatusBroadcast({
+            msgId: "export-status",
+            threadId: "status@broadcast",
+            senderId: "alice",
+            senderName: "Alice",
+            ts: 4000,
+            fromMe: 0,
+            text: "status export row",
+            msgType: "text",
+        });
+
+        const beforeMessages = getLocalMessagesCount("thread-export");
+        const beforeStatuses = getLocalStatusBroadcasts({ limit: 10 }).length;
+        const envelope = exportLocalMessages({
+            accountId: ownId,
+            threadId: "thread-export",
+            after: 1500,
+            before: 3500,
+            limit: 3,
+            order: "asc",
+            includeRaw: true,
+            generatedAt: "2026-07-08T00:00:00.000Z",
+        });
+
+        assert.equal(envelope.source, "local");
+        assert.equal(envelope.local_only, true);
+        assert.equal(envelope.accountId, ownId);
+        assert.equal(envelope.generatedAt, "2026-07-08T00:00:00.000Z");
+        assert.equal(envelope.filters.threadId, "thread-export");
+        assert.equal(envelope.filters.since, 1500);
+        assert.equal(envelope.filters.until, 3500);
+        assert.equal(envelope.filters.includeRaw, true);
+        assert.equal(envelope.count, 2);
+        assert.deepEqual(
+            envelope.messages.map((m) => m.msgId),
+            ["export-2", "export-3"],
+        );
+        assert.equal(envelope.messages[0].threadName, "Export Thread");
+        assert.equal(envelope.messages[0].localPath, "/tmp/export-image.png");
+        assert.equal(envelope.messages[0].content.actionId, "raw-export-2");
+        assert.match(envelope.messages[0].rawContentJson, /raw-export-2/);
+        assert.equal(envelope.messages[1].recalled, true);
+        assert.equal(getLocalMessagesCount("thread-export"), beforeMessages);
+        assert.equal(getLocalStatusBroadcasts({ limit: 10 }).length, beforeStatuses);
+
+        const statusEnvelope = exportLocalMessages({
+            accountId: ownId,
+            status: true,
+            limit: 5,
+            generatedAt: "2026-07-08T00:00:00.000Z",
+        });
+        assert.equal(statusEnvelope.filters.status, true);
+        assert.equal(statusEnvelope.count, 1);
+        assert.equal(statusEnvelope.messages[0].msgId, "export-status");
+
+        assert.throws(() => exportLocalMessages({ limit: 0 }), /limit must be an integer greater than or equal to 1/);
+        assert.throws(() => exportLocalMessages({ order: "sideways" }), /order must be asc or desc/);
     });
 
     it("gets one cached message by id with parsed and raw content metadata", async () => {

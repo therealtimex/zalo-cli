@@ -4,11 +4,14 @@
  */
 
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import { resolve } from "path";
 import { getApi, getOwnId } from "../core/zalo-client.js";
+import { getActive } from "../core/accounts.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import {
+    exportLocalMessages,
     getDb,
     getLocalMessageById,
     getLocalMessageContext,
@@ -232,6 +235,10 @@ function addLocalMessageFilterOptions(command) {
         .option("--media", "Only include non-text media messages")
         .option("--has-media", "Only include messages with a downloaded local media path")
         .option("-n, --limit <n>", "Maximum results to return", "20");
+}
+
+function printJson(data) {
+    console.log(JSON.stringify(data, null, 2));
 }
 
 export function persistOutgoingTextMessage({
@@ -706,6 +713,44 @@ export function registerMsgCommands(program) {
                 process.exit(0);
             } catch (e) {
                 error(`Local message list failed: ${e.message}`);
+                process.exit(1);
+            }
+        });
+
+    addLocalMessageFilterOptions(msg.command("export").description("Export cached local messages as JSON"))
+        .option("--order <order>", "Sort order: desc or asc", "desc")
+        .option("--asc", "Sort exported messages from oldest to newest")
+        .option("--status", "Export status broadcasts instead of regular chat messages")
+        .option("--raw", "Include parsed and raw content_json for each exported message")
+        .option("-o, --output <path>", "Write JSON export to a file")
+        .action(async (opts) => {
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+                const filters = {
+                    ...localMessageFiltersFromOptions({
+                        ...opts,
+                        order: opts.asc ? "asc" : opts.order,
+                    }),
+                    status: opts.status,
+                    includeRaw: opts.raw,
+                };
+                const envelope = exportLocalMessages({
+                    ...filters,
+                    accountId: getActive()?.ownId || getOwnId() || null,
+                });
+                if (opts.output) {
+                    fs.writeFileSync(resolve(opts.output), `${JSON.stringify(envelope, null, 2)}\n`, "utf-8");
+                    if (program.opts().json) printJson(envelope);
+                } else {
+                    printJson(envelope);
+                }
+                process.exit(0);
+            } catch (e) {
+                error(`Local message export failed: ${e.message}`);
                 process.exit(1);
             }
         });
