@@ -390,6 +390,26 @@ describe("Local SQLite Storage & Caching Layer", () => {
         assert.deepEqual(listLocalMessages({ threadId: "missing-thread", limit: 10 }), []);
     });
 
+    it("rejects unsafe local list limits and invalid sort order", async () => {
+        const ownId = "test_user_local_list_validation";
+        await initDatabase(ownId);
+
+        upsertMessage({
+            msgId: "list-validation-1",
+            threadId: "thread-list-validation",
+            senderId: "alice",
+            senderName: "Alice",
+            ts: 1000,
+            text: "validation row",
+            msgType: "text",
+        });
+
+        assert.throws(() => listLocalMessages({ limit: 0 }), /limit must be an integer greater than or equal to 1/);
+        assert.throws(() => listLocalMessages({ limit: -1 }), /limit must be an integer greater than or equal to 1/);
+        assert.throws(() => listLocalMessages({ limit: "abc" }), /limit must be an integer greater than or equal to 1/);
+        assert.throws(() => listLocalMessages({ order: "sideways" }), /order must be asc or desc/);
+    });
+
     it("gets one cached message by id with parsed and raw content metadata", async () => {
         const ownId = "test_user_local_show";
         await initDatabase(ownId);
@@ -471,11 +491,47 @@ describe("Local SQLite Storage & Caching Layer", () => {
             ["ctx-2"],
         );
 
+        const zeroWindow = getLocalMessageContext("ctx-3", { before: 0, after: 0 });
+        assert.deepEqual(zeroWindow.before, []);
+        assert.deepEqual(zeroWindow.after, []);
+
         assert.deepEqual(getLocalMessageContext("missing-context", { before: 1, after: 1 }), {
             target: null,
             before: [],
             after: [],
         });
+    });
+
+    it("rejects negative and non-numeric local context window sizes", async () => {
+        const ownId = "test_user_local_context_validation";
+        await initDatabase(ownId);
+
+        upsertMessage({
+            msgId: "ctx-validation-1",
+            threadId: "thread-context-validation",
+            senderId: "alice",
+            senderName: "Alice",
+            ts: 1000,
+            text: "validation row",
+            msgType: "text",
+        });
+
+        assert.throws(
+            () => getLocalMessageContext("ctx-validation-1", { before: -1 }),
+            /before must be an integer greater than or equal to 0/,
+        );
+        assert.throws(
+            () => getLocalMessageContext("ctx-validation-1", { after: -1 }),
+            /after must be an integer greater than or equal to 0/,
+        );
+        assert.throws(
+            () => getLocalMessageContext("ctx-validation-1", { before: "many" }),
+            /before must be an integer greater than or equal to 0/,
+        );
+        assert.throws(
+            () => getLocalMessageContext("ctx-validation-1", { after: "many" }),
+            /after must be an integer greater than or equal to 0/,
+        );
     });
 
     it("falls back to LIKE for special-character-only queries", async () => {

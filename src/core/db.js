@@ -537,6 +537,23 @@ function parseTimestamp(value, name) {
     return parsed;
 }
 
+function parseIntegerOption(value, name, defaultValue, { min }) {
+    if (value === undefined || value === null || value === "") return defaultValue;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < min) {
+        throw new Error(`${name} must be an integer greater than or equal to ${min}`);
+    }
+    return parsed;
+}
+
+function normalizeMessageOrder(value) {
+    const normalized = String(value || "desc").toLowerCase();
+    if (normalized !== "asc" && normalized !== "desc") {
+        throw new Error("order must be asc or desc");
+    }
+    return normalized.toUpperCase();
+}
+
 function escapeLike(value) {
     return String(value).replace(/[\\%_]/g, "\\$&");
 }
@@ -733,8 +750,8 @@ export function listLocalMessages(options = {}) {
     const params = [];
     addMessageFilters({ conditions, params, options, alias: "m" });
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const order = String(options.order || options.sort || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
-    const limit = Number(options.limit || 20);
+    const order = normalizeMessageOrder(options.order || options.sort);
+    const limit = parseIntegerOption(options.limit, "limit", 20, { min: 1 });
     const rows = db
         .prepare(
             `
@@ -785,8 +802,8 @@ export function getLocalMessageContext(msgId, options = {}) {
         .get(String(msgId));
     if (!targetRow) return { target: null, before: [], after: [] };
 
-    const beforeLimit = Number(options.before ?? 3);
-    const afterLimit = Number(options.after ?? 3);
+    const beforeLimit = parseIntegerOption(options.before, "before", 3, { min: 0 });
+    const afterLimit = parseIntegerOption(options.after, "after", 3, { min: 0 });
     const target = mapMessageRow(targetRow, { includeContent: true });
     const select = `
         SELECT m.msg_id, m.thread_id, c.name AS thread_name, m.sender_id, m.sender_name, m.ts, m.from_me,

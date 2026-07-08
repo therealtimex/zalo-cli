@@ -345,6 +345,45 @@ describe("CLI interface", () => {
                 assert.equal(missing.found, false);
                 assert.equal(missing.message, null);
             }
+
+            const expectFailure = (args, pattern) => {
+                try {
+                    runWithEnv(args, { ZALO_CONFIG_DIR: configDir });
+                    assert.fail(`${args.join(" ")} should fail`);
+                } catch (e) {
+                    assert.match(e.stdout || e.message, pattern);
+                }
+            };
+
+            expectFailure(
+                ["--json", "msg", "list", "--limit", "0"],
+                /limit must be an integer greater than or equal to 1/,
+            );
+            expectFailure(
+                ["--json", "msg", "list", "--limit", "-1"],
+                /limit must be an integer greater than or equal to 1/,
+            );
+            expectFailure(
+                ["--json", "msg", "list", "--limit", "abc"],
+                /limit must be an integer greater than or equal to 1/,
+            );
+            expectFailure(["--json", "msg", "list", "--order", "sideways"], /order must be asc or desc/);
+            expectFailure(
+                ["--json", "msg", "context", "--id", "cli-local-2", "--before", "-1"],
+                /before must be an integer greater than or equal to 0/,
+            );
+            expectFailure(
+                ["--json", "msg", "context", "--id", "cli-local-2", "--after", "-1"],
+                /after must be an integer greater than or equal to 0/,
+            );
+            expectFailure(
+                ["--json", "msg", "context", "--id", "cli-local-2", "--before", "abc"],
+                /before must be an integer greater than or equal to 0/,
+            );
+            expectFailure(
+                ["--json", "msg", "context", "--id", "cli-local-2", "--after", "abc"],
+                /after must be an integer greater than or equal to 0/,
+            );
         } finally {
             fs.rmSync(configDir, { recursive: true, force: true });
         }
