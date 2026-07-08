@@ -59,6 +59,8 @@ describe("CLI interface", () => {
         assert.match(out, /export/);
         assert.match(out, /show/);
         assert.match(out, /context/);
+        assert.match(out, /coverage/);
+        assert.match(out, /backfill/);
         assert.match(out, /seed-status-broadcast/);
         assert.match(out, /download/);
         assert.match(out, /media-sync/);
@@ -122,6 +124,20 @@ describe("CLI interface", () => {
         assert.match(context, /--id/);
         assert.match(context, /--before/);
         assert.match(context, /--after/);
+    });
+
+    it("msg coverage and backfill --help list history coverage options", () => {
+        const coverage = run("msg", "coverage", "--help");
+        assert.match(coverage, /SQLite history coverage/);
+
+        const backfill = run("msg", "backfill", "--help");
+        assert.match(backfill, /--count/);
+        assert.match(backfill, /--requests/);
+        assert.match(backfill, /--timeout/);
+        assert.match(backfill, /--delay/);
+        assert.match(backfill, /--wait/);
+        assert.match(backfill, /--dry-run/);
+        assert.match(backfill, /--ndjson/);
     });
 
     it("msg seed-status-broadcast --help lists QA fixture options", () => {
@@ -504,6 +520,90 @@ describe("CLI interface", () => {
                 ["--json", "msg", "context", "--id", "cli-local-2", "--after", "abc"],
                 /after must be an integer greater than or equal to 0/,
             );
+        } finally {
+            fs.rmSync(configDir, { recursive: true, force: true });
+        }
+    });
+
+    it("executes msg coverage and backfill dry-run against local cache without saved credentials", () => {
+        const configDir = join(tmpdir(), `zalo-agent-cli-history-${process.pid}-${Date.now()}`);
+        const ownId = "cli_history_user";
+        try {
+            fs.mkdirSync(configDir, { recursive: true });
+            fs.writeFileSync(
+                join(configDir, "accounts.json"),
+                JSON.stringify([{ ownId, name: "CLI History", proxy: null, active: true }]),
+                "utf-8",
+            );
+
+            execFileSync(
+                "node",
+                [
+                    "--input-type=module",
+                    "-e",
+                    `
+                        process.env.ZALO_CONFIG_DIR = ${JSON.stringify(configDir)};
+                        const { initDatabase, upsertChat, upsertMessage, closeDatabase } = await import(${JSON.stringify(resolve(import.meta.dirname, "core/db.js"))});
+                        await initDatabase(${JSON.stringify(ownId)});
+                        upsertChat({ threadId: "thread_cli_history", type: 1, name: "CLI History Thread", lastMessageTs: 3000 });
+                        upsertMessage({ msgId: "cli-history-1", threadId: "thread_cli_history", senderId: "friend_cli", senderName: "CLI Friend", ts: 1000, text: "oldest history row", msgType: "text", contentJson: JSON.stringify({ actionId: "cursor-cli-history-1" }) });
+                        upsertMessage({ msgId: "cli-history-2", threadId: "thread_cli_history", senderId: "friend_cli", senderName: "CLI Friend", ts: 3000, text: "newest history row", msgType: "text" });
+                        closeDatabase();
+                    `,
+                ],
+                { encoding: "utf-8", timeout: 10000, env: { ...process.env, ZALO_CONFIG_DIR: configDir } },
+            );
+
+            const coverage = JSON.parse(
+                runWithEnv(["--json", "msg", "coverage", "thread_cli_history"], { ZALO_CONFIG_DIR: configDir }),
+            );
+            assert.equal(coverage.local_only, true);
+            assert.equal(coverage.count, 1);
+            assert.equal(coverage.threads[0].messageCount, 2);
+            assert.equal(coverage.threads[0].threadType, "group");
+            assert.equal(coverage.threads[0].anchor.cursor, "cursor-cli-history-1");
+
+            const dryRun = JSON.parse(
+                runWithEnv(
+                    [
+                        "--json",
+                        "msg",
+                        "backfill",
+                        "thread_cli_history",
+                        "--type",
+                        "group",
+                        "--count",
+                        "25",
+                        "--requests",
+                        "3",
+                        "--timeout",
+                        "1000",
+                        "--wait",
+                        "10",
+                        "--dry-run",
+                    ],
+                    { ZALO_CONFIG_DIR: configDir },
+                ),
+            );
+            assert.equal(dryRun.dry_run, true);
+            assert.equal(dryRun.status, "planned");
+            assert.equal(dryRun.canBackfill, true);
+            assert.equal(dryRun.bounds.count, 25);
+            assert.equal(dryRun.bounds.requests, 3);
+            assert.equal(dryRun.bounds.timeout, 1000);
+            assert.equal(dryRun.bounds.delay, 10);
+            assert.equal(dryRun.anchor.cursor, "cursor-cli-history-1");
+
+            const ndjson = runWithEnv(
+                ["msg", "backfill", "thread_cli_history", "--type", "group", "--dry-run", "--ndjson"],
+                { ZALO_CONFIG_DIR: configDir },
+            )
+                .trim()
+                .split("\n")
+                .map((line) => JSON.parse(line));
+            assert.equal(ndjson.length, 1);
+            assert.equal(ndjson[0].event, "result");
+            assert.equal(ndjson[0].status, "planned");
         } finally {
             fs.rmSync(configDir, { recursive: true, force: true });
         }

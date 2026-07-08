@@ -52,9 +52,10 @@ program
     .hook("preAction", async (thisCommand) => {
         const cmdName = thisCommand.args?.[0] || thisCommand.name();
         const subCmdName = thisCommand.args?.[1];
+        const ndjsonMode = thisCommand.args?.some((arg) => arg === "--ndjson");
         // Suppress zca-js internal logs in JSON mode to keep stdout clean for piping
         const localJsonDefault = cmdName === "msg" && subCmdName === "export";
-        if (program.opts().json || cmdName === "mcp" || localJsonDefault) {
+        if (program.opts().json || ndjsonMode || cmdName === "mcp" || localJsonDefault) {
             // Suppress zca-js stdout logs: JSON mode needs clean output, MCP uses stdout as transport
             process.env.ZALO_JSON_MODE = "1";
         } else if (cmdName !== "oa" && cmdName !== "store") {
@@ -74,8 +75,13 @@ program
             "doctor",
             "store",
         ].includes(cmdName);
-        const localMsgCommands = ["search", "list", "show", "context", "export"];
-        if (cmdName === "msg" && localMsgCommands.includes(subCmdName)) {
+        const localMsgCommands = ["search", "list", "show", "context", "export", "coverage"];
+        const localDryRunMsgCommands = ["backfill"];
+        const isLocalDryRunMsgCommand =
+            cmdName === "msg" &&
+            localDryRunMsgCommands.includes(subCmdName) &&
+            thisCommand.args?.some((arg) => arg === "--dry-run");
+        if (cmdName === "msg" && (localMsgCommands.includes(subCmdName) || isLocalDryRunMsgCommand)) {
             const active = getActive();
             if (active?.ownId) {
                 await initDatabase(active.ownId, {

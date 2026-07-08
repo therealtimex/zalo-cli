@@ -722,6 +722,135 @@ export function getLocalMessagesCount(threadId) {
     return row ? row.count : 0;
 }
 
+function threadTypeLabel(type) {
+    if (type === 0) return "dm";
+    if (type === 1) return "group";
+    return "unknown";
+}
+
+function buildHistoryAnchor(row) {
+    if (!row?.oldest_msg_id) {
+        return {
+            usable: false,
+            msgId: null,
+            actionId: null,
+            cursor: null,
+            timestamp: null,
+            at: null,
+        };
+    }
+
+    let actionId = null;
+    if (row.oldest_content_json) {
+        try {
+            const content = JSON.parse(row.oldest_content_json);
+            actionId = content?.actionId ? String(content.actionId) : null;
+        } catch {}
+    }
+    const cursor = actionId || row.oldest_msg_id;
+    return {
+        usable: !!cursor,
+        msgId: row.oldest_msg_id,
+        actionId,
+        cursor,
+        timestamp: Number(row.oldest_ts),
+        at: row.oldest_ts ? new Date(Number(row.oldest_ts)).toISOString() : null,
+    };
+}
+
+function mapHistoryCoverageRow(row) {
+    const messageCount = Number(row.message_count || 0);
+    return {
+        threadId: row.thread_id,
+        threadName: row.thread_name ?? null,
+        threadType: threadTypeLabel(row.thread_type),
+        threadTypeFlag: row.thread_type ?? null,
+        messageCount,
+        oldestTimestamp: row.oldest_ts === null || row.oldest_ts === undefined ? null : Number(row.oldest_ts),
+        oldestAt: row.oldest_ts ? new Date(Number(row.oldest_ts)).toISOString() : null,
+        newestTimestamp: row.newest_ts === null || row.newest_ts === undefined ? null : Number(row.newest_ts),
+        newestAt: row.newest_ts ? new Date(Number(row.newest_ts)).toISOString() : null,
+        anchor: buildHistoryAnchor(row),
+        hasHistory: messageCount > 0,
+    };
+}
+
+export function getLocalHistoryCoverage(options = {}) {
+    const db = getDb();
+    const threadId = options.threadId ? String(options.threadId) : null;
+    if (!db) {
+        return {
+            source: "local",
+            local_only: true,
+            count: 0,
+            threads: [],
+        };
+    }
+
+    const params = [];
+    const where = threadId ? "WHERE thread_id = ?" : "";
+    if (threadId) params.push(threadId);
+
+    const rows = db
+        .prepare(
+            `
+            WITH message_bounds AS (
+                SELECT
+                    m.thread_id,
+                    count(*) AS message_count,
+                    min(m.ts) AS oldest_ts,
+                    max(m.ts) AS newest_ts,
+                    (
+                        SELECT mi.msg_id
+                        FROM messages mi
+                        WHERE mi.thread_id = m.thread_id
+                        ORDER BY mi.ts ASC, mi.msg_id ASC
+                        LIMIT 1
+                    ) AS oldest_msg_id,
+                    (
+                        SELECT mi.content_json
+                        FROM messages mi
+                        WHERE mi.thread_id = m.thread_id
+                        ORDER BY mi.ts ASC, mi.msg_id ASC
+                        LIMIT 1
+                    ) AS oldest_content_json
+                FROM messages m
+                GROUP BY m.thread_id
+            ),
+            coverage_threads AS (
+                SELECT c.thread_id
+                FROM chats c
+                ${where}
+                UNION
+                SELECT mb.thread_id
+                FROM message_bounds mb
+                ${where}
+            )
+            SELECT
+                ct.thread_id,
+                c.name AS thread_name,
+                c.type AS thread_type,
+                COALESCE(mb.message_count, 0) AS message_count,
+                mb.oldest_ts,
+                mb.newest_ts,
+                mb.oldest_msg_id,
+                mb.oldest_content_json
+            FROM coverage_threads ct
+            LEFT JOIN chats c ON c.thread_id = ct.thread_id
+            LEFT JOIN message_bounds mb ON mb.thread_id = ct.thread_id
+            ORDER BY COALESCE(mb.newest_ts, c.last_message_ts, c.updated_at, 0) DESC, ct.thread_id ASC
+        `,
+        )
+        .all(...params, ...params);
+
+    return {
+        source: "local",
+        local_only: true,
+        count: rows.length,
+        threads: rows.map(mapHistoryCoverageRow),
+    };
+}
+
 export function getLocalMessages(threadId, limit) {
     const db = getDb();
     if (!db) return [];

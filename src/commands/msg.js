@@ -13,6 +13,7 @@ import { extractMessageText } from "../utils/extract-message-text.js";
 import {
     exportLocalMessages,
     getDb,
+    getLocalHistoryCoverage,
     getLocalMessageById,
     getLocalMessageContext,
     getLocalMessages,
@@ -26,6 +27,7 @@ import {
     updateMessageLocalPath,
 } from "../core/db.js";
 import { getMediaInfo, downloadAttachment } from "../utils/media-downloader.js";
+import { buildHistoryBackfillPlan, runHistoryBackfill } from "./history-backfill.js";
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -1007,6 +1009,80 @@ export function registerMsgCommands(program) {
                 process.exit(0);
             } catch (e) {
                 error(`Seed status broadcast failed: ${e.message}`);
+                process.exit(1);
+            }
+        });
+
+    msg.command("coverage [threadId]")
+        .description("Report local SQLite history coverage and oldest-message backfill anchors")
+        .action(async (threadId) => {
+            const jsonMode = program.opts().json;
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+                const coverage = getLocalHistoryCoverage({ threadId });
+                output(coverage, jsonMode, () => {
+                    success(`${coverage.count} thread(s) with local coverage`);
+                    for (const thread of coverage.threads) {
+                        const anchor = thread.anchor.usable ? ` anchor=${thread.anchor.cursor}` : " no-anchor";
+                        console.log(
+                            `  [${thread.threadType}] ${thread.threadId}: ${thread.messageCount} message(s), oldest=${thread.oldestAt || "?"}, newest=${thread.newestAt || "?"},${anchor}`,
+                        );
+                    }
+                });
+                process.exit(0);
+            } catch (e) {
+                error(`History coverage failed: ${e.message}`);
+                process.exit(1);
+            }
+        });
+
+    msg.command("backfill <threadId>")
+        .description("Explicitly backfill older history from the oldest local cached message anchor")
+        .option("-t, --type <type>", "Thread type: 0/dm or 1/group", "0")
+        .option("-n, --count <n>", "Maximum messages to store", "50")
+        .option("--requests <n>", "Maximum old-message requests to issue", "1")
+        .option("--timeout <ms>", "Timeout in milliseconds waiting for each response", "15000")
+        .option("--delay <ms>", "Delay in milliseconds between bounded requests", "0")
+        .option("--wait <ms>", "Alias for --delay")
+        .option("--dry-run", "Plan from local SQLite only without connecting to Zalo or writing rows")
+        .option("--ndjson", "Emit newline-delimited lifecycle events")
+        .action(async (threadId, opts) => {
+            const jsonMode = program.opts().json;
+            const emitEvent = opts.ndjson ? (event) => console.log(JSON.stringify({ threadId, ...event })) : () => {};
+            try {
+                const db = getDb();
+                if (!db) {
+                    error("Database is not initialized. Make sure you are logged in.");
+                    process.exit(1);
+                }
+                const options = { ...opts, threadId, delay: opts.wait ?? opts.delay };
+                const result = opts.dryRun
+                    ? buildHistoryBackfillPlan({ ...options, dryRun: true })
+                    : await runHistoryBackfill({ api: getApi(), options, emitEvent });
+
+                if (opts.ndjson) {
+                    console.log(JSON.stringify({ event: "result", ...result }));
+                } else {
+                    output(result, jsonMode, () => {
+                        if (result.status === "planned") {
+                            success(`Backfill plan ready for ${threadId}`);
+                        } else if (result.status === "backfilled" || result.status === "exhausted") {
+                            success(`Backfill ${result.status}: ${result.messagesStored || 0} message(s) stored`);
+                        } else if (result.status === "no_history") {
+                            warning(`Backfill not planned: ${result.reason}`);
+                        } else {
+                            warning(`Backfill ${result.status}: ${result.messagesStored || 0} message(s) stored`);
+                        }
+                    });
+                }
+                process.exit(result.status === "error" ? 1 : 0);
+            } catch (e) {
+                if (opts.ndjson) console.log(JSON.stringify({ event: "error", threadId, message: e.message }));
+                else error(`History backfill failed: ${e.message}`);
                 process.exit(1);
             }
         });
