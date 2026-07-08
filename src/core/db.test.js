@@ -15,14 +15,18 @@ const {
     upsertChat,
     upsertContact,
     upsertGroup,
+    upsertGroupParticipant,
     upsertMessage,
+    cleanupLocalStore,
     getLocalMessageById,
     getLocalMessageContext,
     getLocalChats,
     getLocalFriends,
     getLocalMessages,
     getLocalMessagesCount,
+    getLocalStoreStats,
     getLocalStatusBroadcasts,
+    planLocalStoreCleanup,
     listLocalMessages,
     searchLocalMessages,
 } = await import("./db.js");
@@ -595,6 +599,174 @@ describe("Local SQLite Storage & Caching Layer", () => {
             statuses.map((m) => m.msgId),
             ["status-1"],
         );
+    });
+
+    it("reports local store stats including recalled and downloaded media accounting", async () => {
+        const ownId = "test_user_store_stats";
+        await initDatabase(ownId);
+        const mediaPath = join(tempHome, "downloaded.jpg");
+        fs.writeFileSync(mediaPath, "media-bytes");
+
+        upsertContact({ userId: "member-1", displayName: "Member One", isFriend: 1 });
+        upsertGroup({ groupId: "group-store", name: "Store Group", memberCount: 1 });
+        upsertGroupParticipant("group-store", "member-1", { role: "admin" });
+        upsertMessage({
+            msgId: "store-media",
+            threadId: "group-store",
+            senderId: "member-1",
+            senderName: "Member One",
+            ts: 1000,
+            text: "media",
+            msgType: "image",
+            localPath: mediaPath,
+        });
+        upsertMessage({
+            msgId: "store-recalled",
+            threadId: "group-store",
+            senderId: "member-1",
+            senderName: "Member One",
+            ts: 2000,
+            text: null,
+            msgType: "text",
+            recalled: 1,
+        });
+        upsertMessage({
+            msgId: "store-status",
+            threadId: "status@broadcast",
+            senderId: "member-1",
+            senderName: "Member One",
+            ts: 3000,
+            text: "status",
+            msgType: "image",
+            localPath: join(tempHome, "missing-status.jpg"),
+        });
+
+        const stats = getLocalStoreStats();
+
+        assert.equal(stats.counts.chats, 1);
+        assert.equal(stats.counts.contacts, 1);
+        assert.equal(stats.counts.groups, 1);
+        assert.equal(stats.counts.group_participants, 1);
+        assert.equal(stats.counts.messages, 2);
+        assert.equal(stats.counts.recalled_messages, 1);
+        assert.equal(stats.counts.status_broadcasts, 1);
+        assert.equal(stats.counts.media_linked_messages, 1);
+        assert.equal(stats.downloaded_media.linked_paths, 2);
+        assert.equal(stats.downloaded_media.files, 1);
+        assert.equal(stats.downloaded_media.bytes, 11);
+        assert.equal(stats.downloaded_media.missing_files, 1);
+    });
+
+    it("plans age cleanup as a dry run without deleting messages or status broadcasts", async () => {
+        const ownId = "test_user_store_cleanup_dry_run";
+        await initDatabase(ownId);
+        const now = Date.UTC(2026, 0, 10);
+        upsertMessage({
+            msgId: "old-chat",
+            threadId: "thread-age",
+            senderId: "a",
+            ts: now - 3 * 86400000,
+            text: "old",
+        });
+        upsertMessage({ msgId: "new-chat", threadId: "thread-age", senderId: "a", ts: now, text: "new" });
+        upsertMessage({
+            msgId: "old-status",
+            threadId: "status@broadcast",
+            senderId: "a",
+            ts: now - 3 * 86400000,
+            text: "old status",
+        });
+
+        const result = cleanupLocalStore({ days: 1, dryRun: true, now });
+
+        assert.equal(result.dry_run, true);
+        assert.equal(result.planned.messages, 1);
+        assert.equal(result.planned.status_broadcasts, 1);
+        assert.equal(result.deleted.messages, 0);
+        assert.equal(getLocalMessagesCount("thread-age"), 2);
+        assert.equal(getLocalStatusBroadcasts({ query: "old status", limit: 10 }).length, 1);
+    });
+
+    it("requires confirmation for actual cleanup and prunes old local rows when confirmed", async () => {
+        const ownId = "test_user_store_cleanup_confirm";
+        await initDatabase(ownId);
+        const now = Date.UTC(2026, 0, 10);
+        upsertMessage({
+            msgId: "old-confirm",
+            threadId: "thread-confirm",
+            senderId: "a",
+            ts: now - 4 * 86400000,
+            text: "old",
+        });
+        upsertMessage({ msgId: "new-confirm", threadId: "thread-confirm", senderId: "a", ts: now, text: "new" });
+        upsertMessage({
+            msgId: "old-confirm-status",
+            threadId: "status@broadcast",
+            senderId: "a",
+            ts: now - 4 * 86400000,
+            text: "old status confirm",
+        });
+
+        assert.throws(() => cleanupLocalStore({ days: 1, now }), /requires --confirm/);
+
+        const result = cleanupLocalStore({ days: 1, confirm: true, now });
+
+        assert.equal(result.deleted.messages, 1);
+        assert.equal(result.deleted.status_broadcasts, 1);
+        assert.equal(getLocalMessageById("old-confirm"), null);
+        assert.equal(getLocalMessageById("new-confirm").msgId, "new-confirm");
+        assert.equal(getLocalStatusBroadcasts({ query: "old status confirm", limit: 10 }).length, 0);
+    });
+
+    it("prunes a cached thread with cascade consistency", async () => {
+        const ownId = "test_user_store_cleanup_thread";
+        await initDatabase(ownId);
+        upsertContact({ userId: "member-thread", displayName: "Thread Member" });
+        upsertGroup({ groupId: "thread-delete", name: "Delete Thread", memberCount: 1 });
+        upsertGroupParticipant("thread-delete", "member-thread", {});
+        upsertMessage({
+            msgId: "delete-1",
+            threadId: "thread-delete",
+            senderId: "member-thread",
+            ts: 1000,
+            text: "delete",
+        });
+        upsertMessage({ msgId: "keep-1", threadId: "thread-keep", senderId: "member-thread", ts: 1000, text: "keep" });
+
+        const plan = planLocalStoreCleanup({ threadId: "thread-delete" });
+        assert.equal(plan.planned.chats, 1);
+        assert.equal(plan.planned.groups, 1);
+        assert.equal(plan.planned.group_participants, 1);
+        assert.equal(plan.planned.messages, 1);
+
+        const result = cleanupLocalStore({ threadId: "thread-delete", confirm: true });
+
+        assert.deepEqual(result.deleted, plan.planned);
+        assert.equal(getLocalMessageById("delete-1"), null);
+        assert.equal(getLocalMessageById("keep-1").msgId, "keep-1");
+        assert.equal(
+            getDb().prepare("SELECT count(*) AS count FROM group_participants WHERE group_id = ?").get("thread-delete")
+                .count,
+            0,
+        );
+        assert.equal(
+            getDb().prepare("SELECT count(*) AS count FROM messages_fts WHERE msg_id = ?").get("delete-1").count,
+            0,
+        );
+    });
+
+    it("blocks cleanup when the database is opened read-only", async () => {
+        const ownId = "test_user_store_cleanup_readonly";
+        await initDatabase(ownId);
+        upsertMessage({ msgId: "readonly-delete", threadId: "thread-readonly", senderId: "a", ts: 1000, text: "old" });
+        closeDatabase();
+        await initDatabase(ownId, { readonly: true });
+
+        assert.throws(
+            () => cleanupLocalStore({ days: 1, confirm: true, now: Date.UTC(2026, 0, 10) }),
+            /read-only mode/,
+        );
+        assert.equal(getLocalMessagesCount("thread-readonly"), 1);
     });
 
     it("persists successful outgoing text sends with returned Zalo message id", async () => {

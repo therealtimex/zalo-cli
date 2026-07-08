@@ -246,6 +246,20 @@ zalo-agent --json msg search "qa-status-broadcast-positive-fixture" --status --l
 Expected search JSON includes `"status": true`, `"count": 1`, and a message with
 `"threadId": "status@broadcast"` and `"msgId": "qa-status-broadcast-fixture"`.
 
+**Local store stats and cleanup:**
+
+These commands inspect or prune only the local SQLite cache for the active account. Cleanup never deletes remote Zalo messages, leaves groups, or calls remote APIs.
+
+```bash
+zalo-agent store stats
+zalo-agent --json store stats
+zalo-agent store cleanup --days 365 --dry-run
+zalo-agent store cleanup --days 365 --confirm
+zalo-agent store cleanup --thread <THREAD_ID> --dry-run
+```
+
+Use `--dry-run` first to inspect planned row counts. Actual cleanup requires `--confirm`, and `--read-only` blocks cleanup before any writes occur.
+
 ### Commands
 
 Full docs: **[Wiki](https://github.com/PhucMPham/zalo-agent-cli/wiki)**
@@ -265,6 +279,7 @@ Full docs: **[Wiki](https://github.com/PhucMPham/zalo-agent-cli/wiki)**
 | `catalog`    | zBusiness catalogs & products                                             | [Catalog](https://github.com/PhucMPham/zalo-agent-cli/wiki/Catalog)                       |
 | `listen`     | Real-time listener, webhook, JSONL                                        | [Listener](https://github.com/PhucMPham/zalo-agent-cli/wiki/Listener)                     |
 | `sync`       | Sync contacts, groups, and message history into SQLite                    | [Sync](https://github.com/PhucMPham/zalo-agent-cli/wiki/Sync)                             |
+| `store`      | Local SQLite cache stats and safe cleanup                                 | Local command help                                                                        |
 | `account`    | Multi-account & proxy                                                     | [Accounts](https://github.com/PhucMPham/zalo-agent-cli/wiki/Accounts)                     |
 | **`oa`**     | **Zalo Official Account API v3.0 — OAuth, messaging, followers, webhook** | **[Official Account](https://github.com/PhucMPham/zalo-agent-cli/wiki/Official-Account)** |
 

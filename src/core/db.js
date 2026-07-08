@@ -445,6 +445,230 @@ export function updateMessageLocalPath(msgId, localPath) {
     db.prepare("UPDATE messages SET local_path = ? WHERE msg_id = ?").run(localPath, msgId);
 }
 
+function tableExists(db, name) {
+    return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?").get(name);
+}
+
+function countTableRows(db, table) {
+    if (!tableExists(db, table)) return 0;
+    return db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count;
+}
+
+function countWhere(db, table, where, params = []) {
+    if (!tableExists(db, table)) return 0;
+    return db.prepare(`SELECT count(*) AS count FROM ${table} ${where}`).get(...params).count;
+}
+
+function getLinkedMediaPaths(db) {
+    const paths = [];
+    if (tableExists(db, "messages")) {
+        paths.push(
+            ...db
+                .prepare("SELECT local_path FROM messages WHERE local_path IS NOT NULL AND local_path != ''")
+                .all()
+                .map((row) => row.local_path),
+        );
+    }
+    if (tableExists(db, "status_broadcasts")) {
+        paths.push(
+            ...db
+                .prepare("SELECT local_path FROM status_broadcasts WHERE local_path IS NOT NULL AND local_path != ''")
+                .all()
+                .map((row) => row.local_path),
+        );
+    }
+    return paths;
+}
+
+export function getLocalStoreStats() {
+    const db = getDb();
+    if (!db) {
+        return {
+            counts: {
+                chats: 0,
+                contacts: 0,
+                groups: 0,
+                group_participants: 0,
+                messages: 0,
+                recalled_messages: 0,
+                status_broadcasts: 0,
+                media_linked_messages: 0,
+            },
+            downloaded_media: {
+                linked_paths: 0,
+                files: 0,
+                missing_files: 0,
+                bytes: 0,
+            },
+        };
+    }
+
+    const mediaPaths = getLinkedMediaPaths(db);
+    let files = 0;
+    let missingFiles = 0;
+    let bytes = 0;
+    for (const mediaPath of mediaPaths) {
+        try {
+            const stat = fs.statSync(mediaPath);
+            if (stat.isFile()) {
+                files += 1;
+                bytes += stat.size;
+            } else {
+                missingFiles += 1;
+            }
+        } catch {
+            missingFiles += 1;
+        }
+    }
+
+    return {
+        counts: {
+            chats: countTableRows(db, "chats"),
+            contacts: countTableRows(db, "contacts"),
+            groups: countTableRows(db, "groups"),
+            group_participants: countTableRows(db, "group_participants"),
+            messages: countTableRows(db, "messages"),
+            recalled_messages: countWhere(db, "messages", "WHERE recalled = 1"),
+            status_broadcasts: countTableRows(db, "status_broadcasts"),
+            media_linked_messages: countWhere(db, "messages", "WHERE local_path IS NOT NULL AND local_path != ''"),
+        },
+        downloaded_media: {
+            linked_paths: mediaPaths.length,
+            files,
+            missing_files: missingFiles,
+            bytes,
+        },
+    };
+}
+
+function parseCleanupDays(days) {
+    if (days === undefined || days === null || days === "") return null;
+    const parsed = Number(days);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new Error("--days must be an integer greater than or equal to 1");
+    }
+    return parsed;
+}
+
+function emptyCleanupCounts() {
+    return {
+        chats: 0,
+        groups: 0,
+        group_participants: 0,
+        messages: 0,
+        status_broadcasts: 0,
+    };
+}
+
+export function planLocalStoreCleanup(options = {}) {
+    const db = getDb();
+    const days = parseCleanupDays(options.days);
+    const threadId = options.threadId ? String(options.threadId) : null;
+    if (!days && !threadId) {
+        throw new Error("store cleanup requires --days or --thread");
+    }
+
+    const now = Number.isFinite(options.now) ? options.now : Date.now();
+    const cutoffTs = days ? now - days * 24 * 60 * 60 * 1000 : null;
+    const fullThreadCleanup = !!threadId && !days;
+    const planned = emptyCleanupCounts();
+
+    if (!db) {
+        return {
+            local_only: true,
+            criteria: {
+                days,
+                cutoff_ts: cutoffTs,
+                cutoff_at: cutoffTs ? new Date(cutoffTs).toISOString() : null,
+                thread_id: threadId,
+                full_thread_cleanup: fullThreadCleanup,
+            },
+            planned,
+        };
+    }
+
+    if (fullThreadCleanup) {
+        planned.messages = countWhere(db, "messages", "WHERE thread_id = ?", [threadId]);
+        planned.status_broadcasts = countWhere(db, "status_broadcasts", "WHERE thread_id = ?", [threadId]);
+        planned.chats = countWhere(db, "chats", "WHERE thread_id = ?", [threadId]);
+        planned.groups = countWhere(db, "groups", "WHERE group_id = ?", [threadId]);
+        planned.group_participants = countWhere(db, "group_participants", "WHERE group_id = ?", [threadId]);
+    } else {
+        const messageConditions = ["ts < ?"];
+        const params = [cutoffTs];
+        if (threadId) {
+            messageConditions.push("thread_id = ?");
+            params.push(threadId);
+        }
+        const where = `WHERE ${messageConditions.join(" AND ")}`;
+        planned.messages = countWhere(db, "messages", where, params);
+        planned.status_broadcasts = countWhere(db, "status_broadcasts", where, params);
+    }
+
+    return {
+        local_only: true,
+        criteria: {
+            days,
+            cutoff_ts: cutoffTs,
+            cutoff_at: cutoffTs ? new Date(cutoffTs).toISOString() : null,
+            thread_id: threadId,
+            full_thread_cleanup: fullThreadCleanup,
+        },
+        planned,
+    };
+}
+
+export function cleanupLocalStore(options = {}) {
+    if (isReadonly()) {
+        throw new Error("store cleanup is blocked because the local database is open in read-only mode");
+    }
+    const db = getDb();
+    const plan = planLocalStoreCleanup(options);
+    if (options.dryRun) {
+        return {
+            ...plan,
+            dry_run: true,
+            deleted: emptyCleanupCounts(),
+        };
+    }
+    if (!options.confirm) {
+        throw new Error("store cleanup requires --confirm unless --dry-run is used");
+    }
+    if (!db) {
+        return {
+            ...plan,
+            dry_run: false,
+            deleted: emptyCleanupCounts(),
+        };
+    }
+
+    const deleted = { ...plan.planned };
+    const run = db.transaction(() => {
+        if (plan.criteria.full_thread_cleanup) {
+            db.prepare("DELETE FROM status_broadcasts WHERE thread_id = ?").run(plan.criteria.thread_id);
+            db.prepare("DELETE FROM chats WHERE thread_id = ?").run(plan.criteria.thread_id);
+            return;
+        }
+
+        const conditions = ["ts < ?"];
+        const params = [plan.criteria.cutoff_ts];
+        if (plan.criteria.thread_id) {
+            conditions.push("thread_id = ?");
+            params.push(plan.criteria.thread_id);
+        }
+        const where = `WHERE ${conditions.join(" AND ")}`;
+        db.prepare(`DELETE FROM status_broadcasts ${where}`).run(...params);
+        db.prepare(`DELETE FROM messages ${where}`).run(...params);
+    });
+    run();
+
+    return {
+        ...plan,
+        dry_run: false,
+        deleted,
+    };
+}
+
 export function getLocalChats(options = {}) {
     const db = getDb();
     if (!db) return [];

@@ -39,6 +39,7 @@ describe("CLI interface", () => {
         assert.match(out, /conv/);
         assert.match(out, /account/);
         assert.match(out, /doctor/);
+        assert.match(out, /store/);
     });
 
     it("msg --help lists all subcommands", () => {
@@ -189,6 +190,110 @@ describe("CLI interface", () => {
         assert.equal(data.auth.active, false);
         assert.equal(data.store.exists, false);
         assert.equal(data.connect.attempted, false);
+    });
+
+    it("store --help lists local stats and cleanup commands", () => {
+        const out = run("store", "--help");
+        assert.match(out, /stats/);
+        assert.match(out, /cleanup/);
+    });
+
+    it("store stats and cleanup operate on the local cache only", () => {
+        const configDir = join(tmpdir(), `zalo-agent-cli-store-${process.pid}-${Date.now()}`);
+        const ownId = "cli_store_user";
+        const now = Date.UTC(2026, 0, 10);
+        try {
+            fs.mkdirSync(configDir, { recursive: true });
+            fs.writeFileSync(
+                join(configDir, "accounts.json"),
+                JSON.stringify([{ ownId, name: "CLI Store", proxy: null, active: true }]),
+                "utf-8",
+            );
+            const mediaPath = join(configDir, "media.bin");
+            fs.writeFileSync(mediaPath, "12345");
+
+            execFileSync(
+                "node",
+                [
+                    "--input-type=module",
+                    "-e",
+                    `
+                        process.env.ZALO_CONFIG_DIR = ${JSON.stringify(configDir)};
+                        const { initDatabase, upsertContact, upsertGroup, upsertGroupParticipant, upsertMessage, closeDatabase } = await import(${JSON.stringify(resolve(import.meta.dirname, "core/db.js"))});
+                        await initDatabase(${JSON.stringify(ownId)});
+                        upsertContact({ userId: "store-member", displayName: "Store Member" });
+                        upsertGroup({ groupId: "thread_store", name: "Store Thread", memberCount: 1 });
+                        upsertGroupParticipant("thread_store", "store-member", {});
+                        upsertMessage({ msgId: "cli-store-old", threadId: "thread_store", senderId: "store-member", senderName: "Store Member", ts: ${now - 4 * 86400000}, text: "old local cache row", msgType: "image", localPath: ${JSON.stringify(mediaPath)} });
+                        upsertMessage({ msgId: "cli-store-new", threadId: "thread_store", senderId: "store-member", senderName: "Store Member", ts: ${now}, text: "new local cache row", msgType: "text" });
+                        upsertMessage({ msgId: "cli-store-status", threadId: "status@broadcast", senderId: "store-member", senderName: "Store Member", ts: ${now - 4 * 86400000}, text: "old status local cache row", msgType: "text" });
+                        closeDatabase();
+                    `,
+                ],
+                { encoding: "utf-8", timeout: 10000, env: { ...process.env, ZALO_CONFIG_DIR: configDir } },
+            );
+
+            const statsOut = runWithEnv(["--json", "store", "stats"], { ZALO_CONFIG_DIR: configDir });
+            const stats = JSON.parse(statsOut);
+            assert.equal(stats.local_only, true);
+            assert.equal(stats.counts.messages, 2);
+            assert.equal(stats.counts.status_broadcasts, 1);
+            assert.equal(stats.downloaded_media.files, 1);
+            assert.equal(stats.downloaded_media.bytes, 5);
+
+            const humanStats = runWithEnv(["store", "stats"], { ZALO_CONFIG_DIR: configDir });
+            assert.match(humanStats, /Local cache only/);
+
+            const dryRunOut = runWithEnv(["--json", "store", "cleanup", "--days", "1", "--dry-run"], {
+                ZALO_CONFIG_DIR: configDir,
+                ZALO_AGENT_TEST_NOW: String(now),
+            });
+            const dryRun = JSON.parse(dryRunOut);
+            assert.equal(dryRun.dry_run, true);
+            assert.equal(dryRun.planned.messages, 1);
+            assert.equal(dryRun.planned.status_broadcasts, 1);
+            assert.equal(dryRun.deleted.messages, 0);
+
+            try {
+                runWithEnv(["--json", "store", "cleanup", "--days", "1"], { ZALO_CONFIG_DIR: configDir });
+                assert.fail("store cleanup should require confirmation");
+            } catch (e) {
+                assert.match(e.stdout || e.message, /requires --confirm/);
+            }
+
+            const confirmOut = runWithEnv(["--json", "store", "cleanup", "--days", "1", "--confirm"], {
+                ZALO_CONFIG_DIR: configDir,
+                ZALO_AGENT_TEST_NOW: String(now),
+            });
+            const confirmed = JSON.parse(confirmOut);
+            assert.equal(confirmed.deleted.messages, 1);
+            assert.equal(confirmed.deleted.status_broadcasts, 1);
+
+            const after = JSON.parse(runWithEnv(["--json", "store", "stats"], { ZALO_CONFIG_DIR: configDir }));
+            assert.equal(after.counts.messages, 1);
+            assert.equal(after.counts.status_broadcasts, 0);
+
+            try {
+                runWithEnv(["--read-only", "--json", "store", "cleanup", "--thread", "thread_store", "--confirm"], {
+                    ZALO_CONFIG_DIR: configDir,
+                });
+                assert.fail("store cleanup should be blocked by --read-only");
+            } catch (e) {
+                assert.match(e.stdout || e.message, /blocked by --read-only/);
+            }
+
+            const threadDryRun = JSON.parse(
+                runWithEnv(["--json", "store", "cleanup", "--thread", "thread_store", "--dry-run"], {
+                    ZALO_CONFIG_DIR: configDir,
+                }),
+            );
+            assert.equal(threadDryRun.planned.chats, 1);
+            assert.equal(threadDryRun.planned.groups, 1);
+            assert.equal(threadDryRun.planned.group_participants, 1);
+            assert.equal(threadDryRun.planned.messages, 1);
+        } finally {
+            fs.rmSync(configDir, { recursive: true, force: true });
+        }
     });
 
     it("executes msg search against an initialized local cache without saved credentials", () => {

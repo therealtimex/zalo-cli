@@ -28,6 +28,7 @@ import { registerCatalogCommands } from "./commands/catalog.js";
 import { registerListenCommand } from "./commands/listen.js";
 import { registerSyncCommand } from "./commands/sync.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
+import { registerStoreCommands } from "./commands/store.js";
 import { registerOACommands } from "./commands/oa.js";
 import { registerMCPCommands } from "./commands/mcp.js";
 import { autoLogin } from "./core/zalo-client.js";
@@ -55,15 +56,23 @@ program
         if (program.opts().json || cmdName === "mcp") {
             // Suppress zca-js stdout logs: JSON mode needs clean output, MCP uses stdout as transport
             process.env.ZALO_JSON_MODE = "1";
-        } else if (cmdName !== "oa") {
+        } else if (cmdName !== "oa" && cmdName !== "store") {
             // OA commands use official Zalo API — no disclaimer needed
             warning(DISCLAIMER);
             console.log();
         }
         // Auto-login before any command that needs it (skip for login/account/oa commands)
-        const skipAutoLogin = ["login", "account", "help", "version", "update", "oa", "mcp", "doctor"].includes(
-            cmdName,
-        );
+        const skipAutoLogin = [
+            "login",
+            "account",
+            "help",
+            "version",
+            "update",
+            "oa",
+            "mcp",
+            "doctor",
+            "store",
+        ].includes(cmdName);
         const localMsgCommands = ["search", "list", "show", "context"];
         if (cmdName === "msg" && localMsgCommands.includes(subCmdName)) {
             const active = getActive();
@@ -112,6 +121,7 @@ registerCatalogCommands(program);
 registerListenCommand(program);
 registerSyncCommand(program);
 registerDoctorCommand(program);
+registerStoreCommands(program);
 registerOACommands(program);
 registerMCPCommands(program);
 
