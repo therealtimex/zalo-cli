@@ -609,6 +609,35 @@ describe("CLI interface", () => {
         }
     });
 
+    it("reports account lock contention for live msg backfill before generic DB errors", () => {
+        const configDir = join(tmpdir(), `zalo-agent-cli-backfill-lock-${process.pid}-${Date.now()}`);
+        const ownId = "cli_backfill_locked_user";
+        try {
+            const accountDir = join(configDir, "accounts", ownId);
+            fs.mkdirSync(accountDir, { recursive: true });
+            fs.writeFileSync(
+                join(configDir, "accounts.json"),
+                JSON.stringify([{ ownId, name: "CLI Backfill Locked", proxy: null, active: true }]),
+                "utf-8",
+            );
+            fs.writeFileSync(join(accountDir, "LOCK"), `pid=${process.pid}\nacquired_at=2026-01-01T00:00:00.000Z`);
+
+            try {
+                runWithEnv(["--lock-wait", "10", "msg", "backfill", "thread_locked", "--requests", "1"], {
+                    ZALO_CONFIG_DIR: configDir,
+                });
+                assert.fail("live msg backfill should fail on account lock contention");
+            } catch (e) {
+                const output = `${e.stdout || ""}${e.stderr || ""}${e.message || ""}`;
+                assert.match(output, /Account lock unavailable for msg backfill/);
+                assert.match(output, /Could not acquire account lock/);
+                assert.doesNotMatch(output, /Database is not initialized/);
+            }
+        } finally {
+            fs.rmSync(configDir, { recursive: true, force: true });
+        }
+    });
+
     it("executes msg export as default JSON stdout and optional file write", () => {
         const configDir = join(tmpdir(), `zalo-agent-cli-export-${process.pid}-${Date.now()}`);
         const ownId = "cli_export_user";

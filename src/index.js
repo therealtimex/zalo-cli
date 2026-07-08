@@ -81,6 +81,7 @@ program
             cmdName === "msg" &&
             localDryRunMsgCommands.includes(subCmdName) &&
             thisCommand.args?.some((arg) => arg === "--dry-run");
+        const isLiveBackfillMsgCommand = cmdName === "msg" && subCmdName === "backfill" && !isLocalDryRunMsgCommand;
         if (cmdName === "msg" && (localMsgCommands.includes(subCmdName) || isLocalDryRunMsgCommand)) {
             const active = getActive();
             if (active?.ownId) {
@@ -89,6 +90,23 @@ program
                     lockWait: program.opts().lockWait,
                 });
             }
+        } else if (isLiveBackfillMsgCommand) {
+            const active = getActive();
+            if (active?.ownId) {
+                try {
+                    await initDatabase(active.ownId, {
+                        readonly: program.opts().readOnly,
+                        lockWait: program.opts().lockWait,
+                    });
+                } catch (e) {
+                    error(`Account lock unavailable for msg backfill: ${e.message}`);
+                    process.exit(1);
+                }
+            }
+            await autoLogin(program.opts().json || ndjsonMode, {
+                readonly: program.opts().readOnly,
+                lockWait: program.opts().lockWait,
+            });
         } else if (!skipAutoLogin) {
             await autoLogin(program.opts().json, {
                 readonly: program.opts().readOnly,
