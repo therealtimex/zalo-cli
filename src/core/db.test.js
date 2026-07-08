@@ -2,9 +2,9 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 
-const tempHome = join(homedir(), ".zalo-agent-cli-test-temp-db");
+const tempHome = join(tmpdir(), "zalo-agent-cli-test-temp-db");
 process.env.ZALO_CONFIG_DIR = tempHome;
 
 // Dynamically import db.js and lock.js so process.env.ZALO_CONFIG_DIR is set beforehand
@@ -19,9 +19,12 @@ const {
     getLocalFriends,
     getLocalMessages,
     getLocalMessagesCount,
+    getLocalStatusBroadcasts,
+    searchLocalMessages,
 } = await import("./db.js");
 
 const { AccountLock } = await import("./lock.js");
+const { persistOutgoingTextMessage } = await import("../commands/msg.js");
 
 describe("Local SQLite Storage & Caching Layer", () => {
     beforeEach(() => {
@@ -141,6 +144,321 @@ describe("Local SQLite Storage & Caching Layer", () => {
         assert.equal(msgs.length, 1);
         assert.equal(msgs[0].msgId, "m2");
         assert.equal(msgs[0].text, "Another message here");
+    });
+
+    it("searches cached messages with FTS5 when available", async () => {
+        const ownId = "test_user_fts_search";
+        await initDatabase(ownId);
+
+        upsertMessage({
+            msgId: "fts-1",
+            threadId: "thread-a",
+            senderId: "alice",
+            senderName: "Alice",
+            ts: 1000,
+            text: "Quarterly planning notes",
+            msgType: "text",
+        });
+        upsertMessage({
+            msgId: "fts-2",
+            threadId: "thread-a",
+            senderId: "bob",
+            senderName: "Bob",
+            ts: 2000,
+            text: "Lunch plans",
+            msgType: "text",
+        });
+
+        const result = searchLocalMessages({ query: "quarterly", limit: 10 });
+
+        assert.equal(result.mode, "fts5");
+        assert.equal(result.fallback, false);
+        assert.deepEqual(
+            result.messages.map((m) => m.msgId),
+            ["fts-1"],
+        );
+    });
+
+    it("falls back to LIKE search when FTS5 is unavailable", async () => {
+        const ownId = "test_user_like_fallback";
+        await initDatabase(ownId);
+
+        const db = getDb();
+        db.exec(`
+            DROP TRIGGER IF EXISTS trg_messages_ai;
+            DROP TRIGGER IF EXISTS trg_messages_au;
+            DROP TRIGGER IF EXISTS trg_messages_ad;
+            DROP TABLE IF EXISTS messages_fts;
+        `);
+
+        upsertMessage({
+            msgId: "like-1",
+            threadId: "thread-like",
+            senderId: "alice",
+            senderName: "Alice",
+            ts: 1000,
+            text: "Find me without full text search",
+            msgType: "text",
+        });
+        upsertMessage({
+            msgId: "like-2",
+            threadId: "thread-like",
+            senderId: "bob",
+            senderName: "Bob",
+            ts: 2000,
+            text: "Other cached message",
+            msgType: "text",
+        });
+
+        const result = searchLocalMessages({ query: "without full", limit: 10 });
+
+        assert.equal(result.mode, "like");
+        assert.equal(result.fallback, true);
+        assert.match(result.ftsError, /messages_fts/);
+        assert.deepEqual(
+            result.messages.map((m) => m.msgId),
+            ["like-1"],
+        );
+    });
+
+    it("combines thread, sender, direction, time range, and message type filters", async () => {
+        const ownId = "test_user_combined_filters";
+        await initDatabase(ownId);
+
+        const rows = [
+            {
+                msgId: "filter-hit",
+                threadId: "thread-1",
+                senderId: "sender-1",
+                senderName: "Sender One",
+                ts: 2000,
+                fromMe: 0,
+                text: "Receipt image uploaded",
+                msgType: "image",
+                localPath: "/tmp/receipt.png",
+            },
+            {
+                msgId: "filter-wrong-thread",
+                threadId: "thread-2",
+                senderId: "sender-1",
+                senderName: "Sender One",
+                ts: 2000,
+                fromMe: 0,
+                text: "Receipt image uploaded",
+                msgType: "image",
+            },
+            {
+                msgId: "filter-wrong-direction",
+                threadId: "thread-1",
+                senderId: "sender-1",
+                senderName: "Sender One",
+                ts: 2000,
+                fromMe: 1,
+                text: "Receipt image uploaded",
+                msgType: "image",
+            },
+            {
+                msgId: "filter-wrong-type",
+                threadId: "thread-1",
+                senderId: "sender-1",
+                senderName: "Sender One",
+                ts: 2000,
+                fromMe: 0,
+                text: "Receipt image uploaded",
+                msgType: "text",
+            },
+            {
+                msgId: "filter-wrong-time",
+                threadId: "thread-1",
+                senderId: "sender-1",
+                senderName: "Sender One",
+                ts: 5000,
+                fromMe: 0,
+                text: "Receipt image uploaded",
+                msgType: "image",
+            },
+        ];
+        for (const row of rows) upsertMessage(row);
+
+        const result = searchLocalMessages({
+            query: "receipt",
+            threadId: "thread-1",
+            sender: "sender-1",
+            direction: "incoming",
+            since: 1000,
+            until: 3000,
+            msgType: "image",
+            hasMedia: true,
+            limit: 10,
+        });
+
+        assert.equal(result.mode, "fts5");
+        assert.deepEqual(
+            result.messages.map((m) => m.msgId),
+            ["filter-hit"],
+        );
+        assert.equal(result.messages[0].localPath, "/tmp/receipt.png");
+    });
+
+    it("falls back to LIKE for special-character-only queries", async () => {
+        const ownId = "test_user_special_query_fallback";
+        await initDatabase(ownId);
+
+        upsertMessage({
+            msgId: "special-1",
+            threadId: "thread-special",
+            senderId: "alice",
+            senderName: "Alice",
+            ts: 1000,
+            text: "Can you check invoice #123?",
+            msgType: "text",
+        });
+
+        const result = searchLocalMessages({ query: "?", limit: 10 });
+
+        assert.equal(result.mode, "like");
+        assert.equal(result.fallback, false);
+        assert.deepEqual(
+            result.messages.map((m) => m.msgId),
+            ["special-1"],
+        );
+    });
+
+    it("stores status broadcasts separately from regular chat messages", async () => {
+        const ownId = "test_user_status_broadcasts";
+        await initDatabase(ownId);
+
+        upsertMessage({
+            msgId: "status-1",
+            threadId: "status@broadcast",
+            senderId: "friend-1",
+            senderName: "Friend One",
+            ts: 1000,
+            text: "Story update from cache",
+            msgType: "image",
+        });
+        upsertMessage({
+            msgId: "chat-1",
+            threadId: "friend-1",
+            senderId: "friend-1",
+            senderName: "Friend One",
+            ts: 2000,
+            text: "Story update in direct chat",
+            msgType: "text",
+        });
+
+        assert.equal(getLocalMessagesCount("status@broadcast"), 0);
+        assert.equal(getLocalMessagesCount("friend-1"), 1);
+
+        const regular = searchLocalMessages({ query: "story", limit: 10 });
+        assert.deepEqual(
+            regular.messages.map((m) => m.msgId),
+            ["chat-1"],
+        );
+
+        const statuses = getLocalStatusBroadcasts({ query: "story", limit: 10 });
+        assert.deepEqual(
+            statuses.map((m) => m.msgId),
+            ["status-1"],
+        );
+    });
+
+    it("persists successful outgoing text sends with returned Zalo message id", async () => {
+        const ownId = "test_user_outgoing_returned_id";
+        await initDatabase(ownId);
+
+        const msgId = persistOutgoingTextMessage({
+            threadId: "thread_1",
+            threadType: 0,
+            text: "Hello from CLI",
+            payload: "Hello from CLI",
+            result: { message: { msgId: "zalo_msg_1" }, cliMsgId: "client_1" },
+            ownId,
+            sentAt: 1234567890,
+        });
+
+        assert.equal(msgId, "zalo_msg_1");
+
+        const row = getDb().prepare("SELECT * FROM messages WHERE msg_id = ?").get("zalo_msg_1");
+        assert.equal(row.thread_id, "thread_1");
+        assert.equal(row.from_me, 1);
+        assert.equal(row.text, "Hello from CLI");
+        assert.equal(row.msg_type, "text");
+        assert.equal(row.sender_id, ownId);
+
+        const content = JSON.parse(row.content_json);
+        assert.equal(content.direction, "outgoing");
+        assert.equal(content.payload, "Hello from CLI");
+        assert.equal(content.result.message.msgId, "zalo_msg_1");
+    });
+
+    it("persists outgoing text sends with a stable client fallback id", async () => {
+        const ownId = "test_user_outgoing_fallback_id";
+        await initDatabase(ownId);
+
+        const sendMetadata = {
+            threadId: "thread_2",
+            threadType: 1,
+            text: "Styled CLI text",
+            payload: { msg: "Styled CLI text", styles: [{ start: 0, len: 6, st: "b" }] },
+            result: { cliMsgId: "client_2", status: "ok" },
+            ownId,
+            sentAt: 2234567890,
+        };
+
+        const msgId = persistOutgoingTextMessage(sendMetadata);
+        const duplicateMsgId = persistOutgoingTextMessage({ ...sendMetadata, sentAt: 3234567890 });
+
+        assert.equal(duplicateMsgId, msgId);
+        assert.match(msgId, /^client:[a-f0-9]{24}$/);
+        assert.equal(getLocalMessagesCount("thread_2"), 1);
+
+        const row = getDb().prepare("SELECT * FROM messages WHERE msg_id = ?").get(msgId);
+        assert.equal(row.thread_id, "thread_2");
+        assert.equal(row.from_me, 1);
+        assert.equal(row.text, "Styled CLI text");
+        assert.equal(row.msg_type, "text");
+        assert.equal(row.sender_id, ownId);
+        assert.equal(row.ts, 3234567890);
+
+        const content = JSON.parse(row.content_json);
+        assert.deepEqual(content.payload, sendMetadata.payload);
+        assert.equal(content.result.cliMsgId, "client_2");
+    });
+
+    it("uses the same outgoing fallback id for undefined and null optional hash fields", async () => {
+        const ownId = "test_user_outgoing_fallback_null_id";
+        await initDatabase(ownId);
+
+        const undefinedMsgId = persistOutgoingTextMessage({
+            threadId: "thread_3",
+            threadType: undefined,
+            text: undefined,
+            payload: undefined,
+            result: {},
+            ownId: null,
+            sentAt: 4234567890,
+        });
+
+        const nullMsgId = persistOutgoingTextMessage({
+            threadId: "thread_3",
+            threadType: null,
+            text: null,
+            payload: null,
+            result: { cliMsgId: null },
+            ownId: null,
+            sentAt: 5234567890,
+        });
+
+        assert.equal(nullMsgId, undefinedMsgId);
+        assert.match(undefinedMsgId, /^client:[a-f0-9]{24}$/);
+        assert.equal(getLocalMessagesCount("thread_3"), 1);
+
+        const row = getDb().prepare("SELECT * FROM messages WHERE msg_id = ?").get(undefinedMsgId);
+        assert.equal(row.thread_id, "thread_3");
+        assert.equal(row.from_me, 1);
+        assert.equal(row.sender_id, null);
+        assert.equal(row.ts, 5234567890);
     });
 
     it("prevents concurrent write locks on same account directory", async () => {

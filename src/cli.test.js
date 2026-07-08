@@ -6,16 +6,22 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "child_process";
-import { resolve } from "path";
+import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "path";
 
 const CLI = resolve(import.meta.dirname, "index.js");
 
-function run(...args) {
+function runWithEnv(args, env = {}) {
     return execFileSync("node", [CLI, ...args], {
         encoding: "utf-8",
         timeout: 10000,
-        env: { ...process.env, HOME: "/tmp/zalo-agent-cli-test-home" },
+        env: { ...process.env, HOME: "/tmp/zalo-agent-cli-test-home", ...env },
     });
+}
+
+function run(...args) {
+    return runWithEnv(args);
 }
 
 describe("CLI interface", () => {
@@ -32,6 +38,7 @@ describe("CLI interface", () => {
         assert.match(out, /group/);
         assert.match(out, /conv/);
         assert.match(out, /account/);
+        assert.match(out, /doctor/);
     });
 
     it("msg --help lists all subcommands", () => {
@@ -46,8 +53,35 @@ describe("CLI interface", () => {
         assert.match(out, /react/);
         assert.match(out, /delete/);
         assert.match(out, /forward/);
+        assert.match(out, /search/);
+        assert.match(out, /seed-status-broadcast/);
         assert.match(out, /download/);
         assert.match(out, /media-sync/);
+    });
+
+    it("msg search --help lists offline search filters", () => {
+        const out = run("msg", "search", "--help");
+        assert.match(out, /--chat/);
+        assert.match(out, /--thread/);
+        assert.match(out, /--sender/);
+        assert.match(out, /--from/);
+        assert.match(out, /--direction/);
+        assert.match(out, /--from-them/);
+        assert.match(out, /--since/);
+        assert.match(out, /--after/);
+        assert.match(out, /--until/);
+        assert.match(out, /--before/);
+        assert.match(out, /--type/);
+        assert.match(out, /--has-media/);
+        assert.match(out, /--status/);
+    });
+
+    it("msg seed-status-broadcast --help lists QA fixture options", () => {
+        const out = run("msg", "seed-status-broadcast", "--help");
+        assert.match(out, /--id/);
+        assert.match(out, /--sender-id/);
+        assert.match(out, /--text/);
+        assert.match(out, /--timestamp/);
     });
 
     it("listen --help lists option --download-media", () => {
@@ -109,6 +143,72 @@ describe("CLI interface", () => {
         assert.match(out, /--delay/);
         assert.match(out, /--timeout/);
         assert.match(out, /--download-media/);
+    });
+
+    it("doctor --help lists doctor flags", () => {
+        const out = run("doctor", "--help");
+        assert.match(out, /--connect/);
+        assert.match(out, /--json/);
+    });
+
+    it("doctor --json on clean state is parseable and does not require auth", () => {
+        const out = run("doctor", "--json");
+        const data = JSON.parse(out);
+        assert.equal(data.auth.active, false);
+        assert.equal(data.store.exists, false);
+        assert.equal(data.connect.attempted, false);
+    });
+
+    it("executes msg search against an initialized local cache without saved credentials", () => {
+        const configDir = join(tmpdir(), `zalo-agent-cli-search-${process.pid}-${Date.now()}`);
+        const ownId = "cli_search_user";
+        try {
+            fs.mkdirSync(configDir, { recursive: true });
+            fs.writeFileSync(
+                join(configDir, "accounts.json"),
+                JSON.stringify([{ ownId, name: "CLI Search", proxy: null, active: true }]),
+                "utf-8",
+            );
+
+            execFileSync(
+                "node",
+                [
+                    "--input-type=module",
+                    "-e",
+                    `
+                        process.env.ZALO_CONFIG_DIR = ${JSON.stringify(configDir)};
+                        const { initDatabase, upsertMessage, closeDatabase } = await import(${JSON.stringify(resolve(import.meta.dirname, "core/db.js"))});
+                        await initDatabase(${JSON.stringify(ownId)});
+                        upsertMessage({
+                            msgId: "cli-search-1",
+                            threadId: "thread_cli",
+                            senderId: "friend_cli",
+                            senderName: "CLI Friend",
+                            ts: 1234567890000,
+                            fromMe: 0,
+                            text: "offline CLI search result",
+                            msgType: "text"
+                        });
+                        closeDatabase();
+                    `,
+                ],
+                { encoding: "utf-8", timeout: 10000, env: { ...process.env, ZALO_CONFIG_DIR: configDir } },
+            );
+
+            const out = runWithEnv(["--json", "msg", "search", "offline", "--thread", "thread_cli"], {
+                ZALO_CONFIG_DIR: configDir,
+            });
+            const parsed = JSON.parse(out);
+
+            assert.equal(parsed.query, "offline");
+            assert.equal(parsed.count, 1);
+            assert.equal(parsed.source, "fts");
+            assert.equal(parsed.messages[0].msgId, "cli-search-1");
+            assert.equal(parsed.messages[0].threadId, "thread_cli");
+            assert.equal(parsed.messages[0].text, "offline CLI search result");
+        } finally {
+            fs.rmSync(configDir, { recursive: true, force: true });
+        }
     });
 
     it("sync fails on clean state since not logged in", () => {

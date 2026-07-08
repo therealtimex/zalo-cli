@@ -27,9 +27,12 @@ import { registerLabelCommands } from "./commands/label.js";
 import { registerCatalogCommands } from "./commands/catalog.js";
 import { registerListenCommand } from "./commands/listen.js";
 import { registerSyncCommand } from "./commands/sync.js";
+import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerOACommands } from "./commands/oa.js";
 import { registerMCPCommands } from "./commands/mcp.js";
 import { autoLogin } from "./core/zalo-client.js";
+import { getActive } from "./core/accounts.js";
+import { initDatabase } from "./core/db.js";
 import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
 import { success, error, warning } from "./utils/output.js";
 
@@ -47,6 +50,7 @@ program
     .option("--lock-wait <ms>", "Milliseconds to wait for account lock", "5000")
     .hook("preAction", async (thisCommand) => {
         const cmdName = thisCommand.args?.[0] || thisCommand.name();
+        const subCmdName = thisCommand.args?.[1];
         // Suppress zca-js internal logs in JSON mode to keep stdout clean for piping
         if (program.opts().json || cmdName === "mcp") {
             // Suppress zca-js stdout logs: JSON mode needs clean output, MCP uses stdout as transport
@@ -57,8 +61,18 @@ program
             console.log();
         }
         // Auto-login before any command that needs it (skip for login/account/oa commands)
-        const skipAutoLogin = ["login", "account", "help", "version", "update", "oa", "mcp"].includes(cmdName);
-        if (!skipAutoLogin) {
+        const skipAutoLogin = ["login", "account", "help", "version", "update", "oa", "mcp", "doctor"].includes(
+            cmdName,
+        );
+        if (cmdName === "msg" && subCmdName === "search") {
+            const active = getActive();
+            if (active?.ownId) {
+                await initDatabase(active.ownId, {
+                    readonly: true,
+                    lockWait: program.opts().lockWait,
+                });
+            }
+        } else if (!skipAutoLogin) {
             await autoLogin(program.opts().json, {
                 readonly: program.opts().readOnly,
                 lockWait: program.opts().lockWait,
@@ -96,6 +110,7 @@ registerLabelCommands(program);
 registerCatalogCommands(program);
 registerListenCommand(program);
 registerSyncCommand(program);
+registerDoctorCommand(program);
 registerOACommands(program);
 registerMCPCommands(program);
 
